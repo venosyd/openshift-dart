@@ -6,7 +6,7 @@ License-Url: http://www.apache.org/licenses/LICENSE-2.0.txt
 Cartridge-Short-Name: DART
 Version: '2.0'
 Cartridge-Version: 2.0
-Cartridge-Vendor: venosyd, kraman
+Cartridge-Vendor: venosyd
 Source-Url: 'https://github.com/venosyd/openshift-dart/archive/master.zip'
 Install-Build-Required: true
 Categories:
