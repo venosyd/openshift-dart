@@ -2,7 +2,7 @@
 source $OPENSHIFT_CARTRIDGE_SDK_BASH
 
 function start() {
-  ${OPENSHIFT_DART_DIR}/usr/dart-sdk/bin/dart $OPENSHIFT_REPO_DIR/server.dart 2>&1 >> $OPENSHIFT_DART_LOG_DIR/dart.log &
+  ${OPENSHIFT_DART_DIR}/usr/dart-sdk/bin/dart $OPENSHIFT_REPO_DIR/bin/appserver.dart 2>&1 >> $OPENSHIFT_DART_LOG_DIR/dart.log &
   pid=$!
   echo $pid > ${OPENSHIFT_DART_PID_DIR}/dart.pid
 }

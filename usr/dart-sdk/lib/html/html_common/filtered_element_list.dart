@@ -5,11 +5,10 @@
 part of html_common;
 
 /**
- * An indexable collection of a node's descendants in the document tree,
+ * An indexable collection of a node's direct descendants in the document tree,
  * filtered so that only elements are in the collection.
  */
-class FilteredElementList<T extends Element> extends ListBase<T>
-    implements NodeListWrapper{
+class FilteredElementList extends ListBase<Element> implements NodeListWrapper {
   final Node _node;
   final List<Node> _childNodes;
 
@@ -21,17 +20,20 @@ class FilteredElementList<T extends Element> extends ListBase<T>
    *     var filteredElements = new FilteredElementList(query("#container"));
    *     // filteredElements is [a, b, c].
    */
-  FilteredElementList(Node node): _childNodes = node.nodes, _node = node;
+  FilteredElementList(Node node)
+      : _childNodes = node.nodes,
+        _node = node;
 
   // We can't memoize this, since it's possible that children will be messed
   // with externally to this class.
-  //
-  // TODO(nweiz): we don't always need to create a new list. For example
-  // forEach, every, any, ... could directly work on the _childNodes.
+  Iterable<Element> get _iterable =>
+      _childNodes.where((n) => n is Element).map/*<Element>*/((n) => n as Element);
   List<Element> get _filtered =>
-    new List<Element>.from(_childNodes.where((n) => n is Element));
+      new List<Element>.from(_iterable, growable: false);
 
   void forEach(void f(Element element)) {
+    // This cannot use the iterator, because operations during iteration might
+    // modify the collection, e.g. addAll might append a node to another parent.
     _filtered.forEach(f);
   }
 
@@ -39,7 +41,7 @@ class FilteredElementList<T extends Element> extends ListBase<T>
     this[index].replaceWith(value);
   }
 
-  void set length(int newLength) {
+  set length(int newLength) {
     final len = this.length;
     if (newLength >= len) {
       return;
@@ -73,7 +75,7 @@ class FilteredElementList<T extends Element> extends ListBase<T>
   }
 
   void setRange(int start, int end, Iterable<Element> iterable,
-                [int skipCount = 0]) {
+      [int skipCount = 0]) {
     throw new UnsupportedError('Cannot setRange on filtered list');
   }
 
@@ -86,7 +88,8 @@ class FilteredElementList<T extends Element> extends ListBase<T>
   }
 
   void removeRange(int start, int end) {
-    _filtered.sublist(start, end).forEach((el) => el.remove());
+    new List.from(_iterable.skip(start).take(end - start))
+        .forEach((el) => el.remove());
   }
 
   void clear() {
@@ -96,7 +99,7 @@ class FilteredElementList<T extends Element> extends ListBase<T>
   }
 
   Element removeLast() {
-    final result = this.last;
+    final result = _iterable.last;
     if (result != null) {
       result.remove();
     }
@@ -104,11 +107,21 @@ class FilteredElementList<T extends Element> extends ListBase<T>
   }
 
   void insert(int index, Element value) {
-    _childNodes.insert(index, value);
+    if (index == length) {
+      add(value);
+    } else {
+      var element = _iterable.elementAt(index);
+      element.parentNode.insertBefore(value, element);
+    }
   }
 
   void insertAll(int index, Iterable<Element> iterable) {
-    _childNodes.insertAll(index, iterable);
+    if (index == length) {
+      addAll(iterable);
+    } else {
+      var element = _iterable.elementAt(index);
+      element.parentNode.insertAllBefore(iterable, element);
+    }
   }
 
   Element removeAt(int index) {
@@ -119,18 +132,18 @@ class FilteredElementList<T extends Element> extends ListBase<T>
 
   bool remove(Object element) {
     if (element is! Element) return false;
-    for (int i = 0; i < length; i++) {
-      Element indexElement = this[i];
-      if (identical(indexElement, element)) {
-        indexElement.remove();
-        return true;
-      }
+    if (contains(element)) {
+      (element as Element).remove(); // Placate the type checker
+      return true;
+    } else {
+      return false;
     }
-    return false;
   }
 
-  int get length => _filtered.length;
-  Element operator [](int index) => _filtered[index];
+  int get length => _iterable.length;
+  Element operator [](int index) => _iterable.elementAt(index);
+  // This cannot use the iterator, because operations during iteration might
+  // modify the collection, e.g. addAll might append a node to another parent.
   Iterator<Element> get iterator => _filtered.iterator;
 
   List<Node> get rawList => _node.childNodes;

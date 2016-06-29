@@ -40,6 +40,7 @@ typedef enum {
   Dart_CObject_kTypedData,
   Dart_CObject_kExternalTypedData,
   Dart_CObject_kSendPort,
+  Dart_CObject_kCapability,
   Dart_CObject_kUnsupported,
   Dart_CObject_kNumberOfTypes
 } Dart_CObject_Type;
@@ -52,8 +53,18 @@ typedef struct _Dart_CObject {
     int64_t as_int64;
     double as_double;
     char* as_string;
-    char* as_bigint;
-    Dart_Port as_send_port;
+    struct {
+      bool neg;
+      intptr_t used;
+      struct _Dart_CObject* digits;
+    } as_bigint;
+    struct {
+      Dart_Port id;
+      Dart_Port origin_id;
+    } as_send_port;
+    struct {
+      int64_t id;
+    } as_capability;
     struct {
       intptr_t length;
       struct _Dart_CObject** values;
@@ -89,6 +100,16 @@ typedef struct _Dart_CObject {
  * \return True if the message was posted.
  */
 DART_EXPORT bool Dart_PostCObject(Dart_Port port_id, Dart_CObject* message);
+
+/**
+ * Posts a message on some port. The message will contain the integer 'message'.
+ *
+ * \param port_id The destination port.
+ * \param message The message to send.
+ *
+ * \return True if the message was posted.
+ */
+DART_EXPORT bool Dart_PostInteger(Dart_Port port_id, int64_t message);
 
 /**
  * A native message handler.
@@ -133,22 +154,6 @@ DART_EXPORT Dart_Port Dart_NewNativePort(const char* name,
  * \return Returns true if the port was closed successfully.
  */
 DART_EXPORT bool Dart_CloseNativePort(Dart_Port native_port_id);
-
-
-/*
- * =================
- * Profiling support
- * =================
- */
-
-/* External pprof support for gathering and dumping symbolic
- * information that can be used for better profile reports for
- * dynamically generated code. */
-DART_EXPORT void Dart_InitPprofSupport();
-DART_EXPORT void Dart_GetPprofSymbolInfo(void** buffer, int* buffer_size);
-
-/* Support for generating symbol maps for use by the Linux perf tool. */
-DART_EXPORT void Dart_InitPerfEventsSupport(void* perf_events_file);
 
 
 /*

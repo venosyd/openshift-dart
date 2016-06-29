@@ -60,25 +60,36 @@ class AsciiCodec extends Encoding {
     }
   }
 
-  Converter<String, List<int>> get encoder => const AsciiEncoder();
+  AsciiEncoder get encoder => const AsciiEncoder();
 
-  Converter<List<int>, String> get decoder =>
+  AsciiDecoder get decoder =>
       _allowInvalid ? const AsciiDecoder(allowInvalid: true)
                     : const AsciiDecoder(allowInvalid: false);
 }
 
 // Superclass for [AsciiEncoder] and [Latin1Encoder].
 // Generalizes common operations that only differ by a mask;
-class _UnicodeSubsetEncoder extends Converter<String, List<int>> {
+class _UnicodeSubsetEncoder extends Converter<String, List<int>>
+    implements ChunkedConverter<String, List<int>, String, List<int>> {
+
   final int _subsetMask;
 
   const _UnicodeSubsetEncoder(this._subsetMask);
 
-  List<int> convert(String string) {
-    // TODO(11971): Use Uint8List when possible.
-    List result = new List<int>(string.length);
-    for (int i = 0; i < string.length; i++) {
-      var codeUnit = string.codeUnitAt(i);
+  /**
+   * Converts the [String] into a list of its code units.
+   *
+   * If [start] and [end] are provided, only the substring
+   * `string.substring(start, end)` is used as input to the conversion.
+   */
+  List<int> convert(String string, [int start = 0, int end]) {
+    int stringLength = string.length;
+    RangeError.checkValidRange(start, end, stringLength);
+    if (end == null) end = stringLength;
+    int length = end - start;
+    List<int> result = new Uint8List(length);
+    for (int i = 0; i < length; i++) {
+      var codeUnit = string.codeUnitAt(start + i);
       if ((codeUnit & ~_subsetMask) != 0) {
         throw new ArgumentError("String contains invalid characters.");
       }
@@ -93,8 +104,7 @@ class _UnicodeSubsetEncoder extends Converter<String, List<int>> {
    * The converter works more efficiently if the given [sink] is a
    * [ByteConversionSink].
    */
-  StringConversionSink startChunkedConversion(
-      ChunkedConversionSink<List<int>> sink) {
+  StringConversionSink startChunkedConversion(Sink<List<int>> sink) {
     if (sink is! ByteConversionSink) {
       sink = new ByteConversionSink.from(sink);
     }
@@ -127,12 +137,7 @@ class _UnicodeSubsetEncoderSink extends StringConversionSinkBase {
   }
 
   void addSlice(String source, int start, int end, bool isLast) {
-    if (start < 0 || start > source.length) {
-      throw new RangeError.range(start, 0, source.length);
-    }
-    if (end < start || end > source.length) {
-      throw new RangeError.range(end, start, source.length);
-    }
+    RangeError.checkValidRange(start, end, source.length);
     for (int i = start; i < end; i++) {
       int codeUnit = source.codeUnitAt(i);
       if ((codeUnit & ~_subsetMask) != 0) {
@@ -151,7 +156,9 @@ class _UnicodeSubsetEncoderSink extends StringConversionSinkBase {
  * This class converts Latin-1 bytes (lists of unsigned 8-bit integers)
  * to a string.
  */
-abstract class _UnicodeSubsetDecoder extends Converter<List<int>, String> {
+abstract class _UnicodeSubsetDecoder extends Converter<List<int>, String>
+    implements ChunkedConverter<List<int>, String, List<int>, String> {
+
   final bool _allowInvalid;
   final int _subsetMask;
 
@@ -174,23 +181,30 @@ abstract class _UnicodeSubsetDecoder extends Converter<List<int>, String> {
   /**
    * Converts the [bytes] (a list of unsigned 7- or 8-bit integers) to the
    * corresponding string.
+   *
+   * If [start] and [end] are provided, only the sub-list of bytes from
+   * `start` to `end` (`end` not inclusive) is used as input to the conversion.
    */
-  String convert(List<int> bytes) {
-    for (int i = 0; i < bytes.length; i++) {
+  String convert(List<int> bytes, [int start = 0, int end]) {
+    int byteCount = bytes.length;
+    RangeError.checkValidRange(start, end, byteCount);
+    if (end == null) end = byteCount;
+
+    for (int i = start; i < end; i++) {
       int byte = bytes[i];
       if ((byte & ~_subsetMask) != 0) {
         if (!_allowInvalid) {
           throw new FormatException("Invalid value in input: $byte");
         }
-        return _convertInvalid(bytes);
+        return _convertInvalid(bytes, start, end);
       }
     }
-    return new String.fromCharCodes(bytes);
+    return new String.fromCharCodes(bytes, start, end);
   }
 
-  String _convertInvalid(List<int> bytes) {
+  String _convertInvalid(List<int> bytes, int start, int end) {
     StringBuffer buffer = new StringBuffer();
-    for (int i = 0; i < bytes.length; i++) {
+    for (int i = start; i < end; i++) {
       int value = bytes[i];
       if ((value & ~_subsetMask) != 0) value = 0xFFFD;
       buffer.writeCharCode(value);
@@ -204,17 +218,7 @@ abstract class _UnicodeSubsetDecoder extends Converter<List<int>, String> {
    * The converter works more efficiently if the given [sink] is a
    * [StringConversionSink].
    */
-  ByteConversionSink startChunkedConversion(
-      ChunkedConversionSink<String> sink) {
-    StringConversionSink stringSink;
-    if (sink is StringConversionSink) {
-      stringSink = sink;
-    } else {
-      stringSink = new StringConversionSink.from(sink);
-    }
-    // TODO(lrn): Use stringSink.asUtf16Sink() if it becomes available.
-    return new _Latin1DecoderSink(_allowInvalid, stringSink);
-  }
+  ByteConversionSink startChunkedConversion(Sink<String> sink);
 
   // Override the base-class's bind, to provide a better type.
   Stream<String> bind(Stream<List<int>> stream) => super.bind(stream);
@@ -230,8 +234,7 @@ class AsciiDecoder extends _UnicodeSubsetDecoder {
    * The converter works more efficiently if the given [sink] is a
    * [StringConversionSink].
    */
-  ByteConversionSink startChunkedConversion(
-      ChunkedConversionSink<String> sink) {
+  ByteConversionSink startChunkedConversion(Sink<String> sink) {
     StringConversionSink stringSink;
     if (sink is StringConversionSink) {
       stringSink = sink;
@@ -242,14 +245,17 @@ class AsciiDecoder extends _UnicodeSubsetDecoder {
     // works just as well, is likely to have less decoding overhead,
     // and make adding U+FFFD easier.
     // At that time, merge this with _Latin1DecoderSink;
-    return new _AsciiDecoderSink(_allowInvalid, stringSink.asUtf8Sink(false));
+    if (_allowInvalid) {
+      return new _ErrorHandlingAsciiDecoderSink(stringSink.asUtf8Sink(false));
+    } else {
+      return new _SimpleAsciiDecoderSink(stringSink);
+    }
   }
 }
 
-class _AsciiDecoderSink extends ByteConversionSinkBase {
-  final bool _allowInvalid;
+class _ErrorHandlingAsciiDecoderSink extends ByteConversionSinkBase {
   ByteConversionSink _utf8Sink;
-  _AsciiDecoderSink(this._allowInvalid, this._utf8Sink);
+  _ErrorHandlingAsciiDecoderSink(this._utf8Sink);
 
   void close() {
     _utf8Sink.close();
@@ -260,22 +266,13 @@ class _AsciiDecoderSink extends ByteConversionSinkBase {
   }
 
   void addSlice(List<int> source, int start, int end, bool isLast) {
-    if (start < 0 || start > source.length) {
-      throw new RangeError.range(start, 0, source.length);
-    }
-    if (end < start || end > source.length) {
-      throw new RangeError.range(end, start, source.length);
-    }
+    RangeError.checkValidRange(start, end, source.length);
     for (int i = start; i < end; i++) {
       if ((source[i] & ~_ASCII_MASK) != 0) {
-        if (_allowInvalid) {
-          if (i > start) _utf8Sink.addSlice(source, start, i, false);
-          // Add UTF-8 encoding of U+FFFD.
-          _utf8Sink.add(const<int>[0xEF, 0xBF, 0xBD]);
-          start = i + 1;
-        } else {
-          throw new FormatException("Source contains non-ASCII bytes.");
-        }
+        if (i > start) _utf8Sink.addSlice(source, start, i, false);
+        // Add UTF-8 encoding of U+FFFD.
+        _utf8Sink.add(const<int>[0xEF, 0xBF, 0xBD]);
+        start = i + 1;
       }
     }
     if (start < end) {
@@ -283,5 +280,35 @@ class _AsciiDecoderSink extends ByteConversionSinkBase {
     } else if (isLast) {
       close();
     }
+  }
+}
+
+class _SimpleAsciiDecoderSink extends ByteConversionSinkBase {
+  Sink _sink;
+  _SimpleAsciiDecoderSink(this._sink);
+
+  void close() {
+    _sink.close();
+  }
+
+  void add(List<int> source) {
+    for (int i = 0; i < source.length; i++) {
+      if ((source[i] & ~_ASCII_MASK) != 0) {
+        throw new FormatException("Source contains non-ASCII bytes.");
+      }
+    }
+    _sink.add(new String.fromCharCodes(source));
+  }
+
+  void addSlice(List<int> source, int start, int end, bool isLast) {
+    final int length = source.length;
+    RangeError.checkValidRange(start, end, length);
+    if (start < end) {
+      if (start != 0 || end != length) {
+        source = source.sublist(start, end);
+      }
+      add(source);
+    }
+    if (isLast) close();
   }
 }

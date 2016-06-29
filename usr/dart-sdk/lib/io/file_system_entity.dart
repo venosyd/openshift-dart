@@ -4,6 +4,14 @@
 
 part of dart.io;
 
+/**
+ * The type of an entity on the file system, such as a file, directory, or link.
+ *
+ * These constants are used by the [FileSystemEntity] class
+ * to indicate the object's type.
+ *
+ */
+
 class FileSystemEntityType {
   static const FILE = const FileSystemEntityType._internal(0);
   static const DIRECTORY = const FileSystemEntityType._internal(1);
@@ -34,6 +42,8 @@ class FileStat {
   static const _ACCESSED_TIME = 3;
   static const _MODE = 4;
   static const _SIZE = 5;
+
+  static const _notFound = const FileStat._internalNotFound();
 
   /**
    * The time of the last change to the data or metadata of the file system
@@ -73,7 +83,11 @@ class FileStat {
                      this.mode,
                      this.size);
 
-  external static List<int> _statSync(String path);
+  const FileStat._internalNotFound() :
+      changed = null,  modified = null, accessed = null,
+      type = FileSystemEntityType.NOT_FOUND, mode = 0, size = -1;
+
+  external static _statSync(String path);
 
 
   /**
@@ -88,11 +102,11 @@ class FileStat {
       path = FileSystemEntity._trimTrailingPathSeparators(path);
     }
     var data = _statSync(path);
-    if (data is OSError) throw data;
+    if (data is OSError) return FileStat._notFound;
     return new FileStat._internal(
-        new DateTime.fromMillisecondsSinceEpoch(data[_CHANGED_TIME] * 1000),
-        new DateTime.fromMillisecondsSinceEpoch(data[_MODIFIED_TIME] * 1000),
-        new DateTime.fromMillisecondsSinceEpoch(data[_ACCESSED_TIME] * 1000),
+        new DateTime.fromMillisecondsSinceEpoch(data[_CHANGED_TIME]),
+        new DateTime.fromMillisecondsSinceEpoch(data[_MODIFIED_TIME]),
+        new DateTime.fromMillisecondsSinceEpoch(data[_ACCESSED_TIME]),
         FileSystemEntityType._lookup(data[_TYPE]),
         data[_MODE],
         data[_SIZE]);
@@ -110,18 +124,16 @@ class FileStat {
     if (Platform.isWindows) {
       path = FileSystemEntity._trimTrailingPathSeparators(path);
     }
-    return _IOService.dispatch(_FILE_STAT, [path]).then((response) {
+    return _IOService._dispatch(_FILE_STAT, [path]).then((response) {
       if (_isErrorResponse(response)) {
-        throw _exceptionFromResponse(response,
-                                     "Error getting stat",
-                                     path);
+        return FileStat._notFound;
       }
       // Unwrap the real list from the "I'm not an error" wrapper.
       List data = response[1];
       return new FileStat._internal(
-          new DateTime.fromMillisecondsSinceEpoch(data[_CHANGED_TIME] * 1000),
-          new DateTime.fromMillisecondsSinceEpoch(data[_MODIFIED_TIME] * 1000),
-          new DateTime.fromMillisecondsSinceEpoch(data[_ACCESSED_TIME] * 1000),
+          new DateTime.fromMillisecondsSinceEpoch(data[_CHANGED_TIME]),
+          new DateTime.fromMillisecondsSinceEpoch(data[_MODIFIED_TIME]),
+          new DateTime.fromMillisecondsSinceEpoch(data[_ACCESSED_TIME]),
           FileSystemEntityType._lookup(data[_TYPE]),
           data[_MODE],
           data[_SIZE]);
@@ -160,17 +172,55 @@ FileStat: type $type
 
 
 /**
- * A [FileSystemEntity] is a common super class for [File] and
- * [Directory] objects.
+ * The common super class for [File], [Directory], and [Link] objects.
  *
  * [FileSystemEntity] objects are returned from directory listing
- * operations. To determine if a FileSystemEntity is a [File] or a
- * [Directory], perform a type check:
+ * operations. To determine if a FileSystemEntity is a [File], a
+ * [Directory], or a [Link] perform a type check:
  *
  *     if (entity is File) (entity as File).readAsStringSync();
+ *
+ * You can also use the [type] or [typeSync] methods to determine
+ * the type of a file system object.
+ *
+ * Most methods in this class occur in synchronous and asynchronous pairs,
+ * for example, [exists] and [existsSync].
+ * Unless you have a specific reason for using the synchronous version
+ * of a method, prefer the asynchronous version to avoid blocking your program.
+ *
+ * Here's the exists method in action:
+ *
+ *     entity.exists().then((isThere) {
+ *       isThere ? print('exists') : print('non-existent');
+ *     });
+ *
+ *
+ * ## Other resources
+ *
+ * * [Dart by
+ *   Example](https://www.dartlang.org/dart-by-example/#files-directories-and-symlinks)
+ *   provides additional task-oriented code samples that show how to use various
+ *   API from the [Directory] class and the [File] class, both subclasses of
+ *   FileSystemEntity.
+ *
+ * * [I/O for Command-Line
+ *   Apps](https://www.dartlang.org/docs/dart-up-and-running/ch03.html#dartio---io-for-command-line-apps),
+ *   a section from _A Tour of the Dart Libraries_ covers files and directories.
+ *
+ * * [Write Command-Line Apps](https://www.dartlang.org/docs/tutorials/cmdline/),
+ *   a tutorial about writing command-line apps, includes information about
+ *   files and directories.
  */
 abstract class FileSystemEntity {
   String get path;
+
+  /**
+   * Returns a [Uri] representing the file system entity's location.
+   *
+   * The returned URI's scheme is always "file" if the entity's [path] is
+   * absolute, otherwise the scheme will be empty.
+   */
+  Uri get uri => new Uri.file(path);
 
   /**
    * Checks whether the file system entity with this path exists. Returns
@@ -227,25 +277,33 @@ abstract class FileSystemEntity {
   /**
    * Resolves the path of a file system object relative to the
    * current working directory, resolving all symbolic links on
-   * the path and resolving all '..' and '.' path segments.
-   * [resolveSymbolicLinks] returns a [:Future<String>:]
+   * the path and resolving all `..` and `.` path segments.
    *
-   * [resolveSymbolicLinks] uses the operating system's native filesystem api
-   * to resolve the path, using the realpath function on linux and
-   * Mac OS, and the GetFinalPathNameByHandle function on Windows.
-   * If the path does not point to an existing file system object,
-   * [resolveSymbolicLinks] completes the returned Future with an FileSystemException.
+   * [resolveSymbolicLinks] uses the operating system's native
+   * file system API to resolve the path, using the `realpath` function
+   * on linux and OS X, and the `GetFinalPathNameByHandle` function on
+   * Windows. If the path does not point to an existing file system object,
+   * `resolveSymbolicLinks` throws a `FileSystemException`.
    *
-   * On Windows, symbolic links are resolved to their target before applying
-   * a '..' that follows, and on other platforms, the '..' is applied to the
-   * symbolic link without resolving it.  The second behavior can be emulated
-   * on Windows by processing any '..' segments before calling
-   * [resolveSymbolicLinks].  One way of doing this is with the URI class:
-   * [:new Uri.parse('.').resolveUri(new Uri.file(input)).toFilePath();],
-   * since [resolve] removes '..' segments.
+   * On Windows the `..` segments are resolved _before_ resolving the symbolic
+   * link, and on other platforms the symbolic links are _resolved to their
+   * target_ before applying a `..` that follows.
+   *
+   * To ensure the same behavior on all platforms resolve `..` segments before
+   * calling `resolveSymbolicLinks`. One way of doing this is with the `Uri`
+   * class:
+   *
+   *     var path = Uri.parse('.').resolveUri(new Uri.file(input)).toFilePath();
+   *     if (path == '') path = '.';
+   *     new File(path).resolveSymbolicLinks().then((resolved) {
+   *       print(resolved);
+   *     });
+   *
+   * since `Uri.resolve` removes `..` segments. This will result in the Windows
+   * behavior.
    */
   Future<String> resolveSymbolicLinks() {
-    return _IOService.dispatch(_FILE_RESOLVE_SYMBOLIC_LINKS, [path])
+    return _IOService._dispatch(_FILE_RESOLVE_SYMBOLIC_LINKS, [path])
         .then((response) {
           if (_isErrorResponse(response)) {
             throw _exceptionFromResponse(response,
@@ -259,21 +317,29 @@ abstract class FileSystemEntity {
   /**
    * Resolves the path of a file system object relative to the
    * current working directory, resolving all symbolic links on
-   * the path and resolving all '..' and '.' path segments.
+   * the path and resolving all `..` and `.` path segments.
    *
    * [resolveSymbolicLinksSync] uses the operating system's native
-   * filesystem api to resolve the path, using the realpath function
-   * on linux and Mac OS, and the GetFinalPathNameByHandle function on Windows.
-   * If the path does not point to an existing file system object,
-   * [resolveSymbolicLinksSync] throws a FileSystemException.
+   * file system API to resolve the path, using the `realpath` function
+   * on linux and OS X, and the `GetFinalPathNameByHandle` function on
+   * Windows. If the path does not point to an existing file system object,
+   * `resolveSymbolicLinksSync` throws a `FileSystemException`.
    *
-   * On Windows, symbolic links are resolved to their target before applying
-   * a '..' that follows, and on other platforms, the '..' is applied to the
-   * symbolic link without resolving it.  The second behavior can be emulated
-   * on Windows by processing any '..' segments before calling
-   * [resolveSymbolicLinks].  One way of doing this is with the URI class:
-   * [:new Uri.parse('.').resolveUri(new Uri.file(input)).toFilePath();],
-   * since [resolve] removes '..' segments.
+   * On Windows the `..` segments are resolved _before_ resolving the symbolic
+   * link, and on other platforms the symbolic links are _resolved to their
+   * target_ before applying a `..` that follows.
+   *
+   * To ensure the same behavior on all platforms resolve `..` segments before
+   * calling `resolveSymbolicLinksSync`. One way of doing this is with the `Uri`
+   * class:
+   *
+   *     var path = Uri.parse('.').resolveUri(new Uri.file(input)).toFilePath();
+   *     if (path == '') path = '.';
+   *     var resolved = new File(path).resolveSymbolicLinksSync();
+   *     print(resolved);
+   *
+   * since `Uri.resolve` removes `..` segments. This will result in the Windows
+   * behavior.
    */
   String resolveSymbolicLinksSync() {
     var result = _resolveSymbolicLinks(path);
@@ -360,7 +426,7 @@ abstract class FileSystemEntity {
    *     files and directories. Recursive watching is not supported.
    *     Note: When watching files directly, delete events might not happen
    *     as expected.
-   *   * `Mac OS`: Uses `FSEvents`. The implementation supports watching both
+   *   * `OS X`: Uses `FSEvents`. The implementation supports watching both
    *     files and directories. Recursive watching is supported.
    *
    * The system will start listening for events once the returned [Stream] is
@@ -376,10 +442,12 @@ abstract class FileSystemEntity {
    * Use `events` to specify what events to listen for. The constants in
    * [FileSystemEvent] can be or'ed together to mix events. Default is
    * [FileSystemEvent.ALL].
+   *
+   * A move event may be reported as seperate delete and create events.
    */
   Stream<FileSystemEvent> watch({int events: FileSystemEvent.ALL,
                                  bool recursive: false})
-     => _FileSystemWatcher.watch(_trimTrailingPathSeparators(path),
+     => _FileSystemWatcher._watch(_trimTrailingPathSeparators(path),
                                  events,
                                  recursive);
 
@@ -399,7 +467,7 @@ abstract class FileSystemEntity {
    * to an object that does not exist.
    */
   static Future<bool> identical(String path1, String path2) {
-    return _IOService.dispatch(_FILE_IDENTICAL, [path1, path2]).then((response) {
+    return _IOService._dispatch(_FILE_IDENTICAL, [path1, path2]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response,
             "Error in FileSystemEntity.identical($path1, $path2)", "");
@@ -469,7 +537,7 @@ abstract class FileSystemEntity {
   /**
    * Test if [watch] is supported on the current system.
    *
-   * Mac OS 10.6 and below is not supported.
+   * OS X 10.6 and below is not supported.
    */
   static bool get isWatchSupported => _FileSystemWatcher.isSupported;
 
@@ -597,7 +665,7 @@ abstract class FileSystemEntity {
   }
 
   static Future<int> _getTypeAsync(String path, bool followLinks) {
-    return _IOService.dispatch(_FILE_TYPE, [path, followLinks])
+    return _IOService._dispatch(_FILE_TYPE, [path, followLinks])
       .then((response) {
         if (_isErrorResponse(response)) {
           throw _exceptionFromResponse(response, "Error getting type", path);
@@ -617,7 +685,7 @@ abstract class FileSystemEntity {
   static String _trimTrailingPathSeparators(String path) {
     // Don't handle argument errors here.
     if (path is! String) return path;
-    if (Platform.operatingSystem == 'windows') {
+    if (Platform.isWindows) {
       while (path.length > 1 &&
              (path.endsWith(Platform.pathSeparator) ||
               path.endsWith('/'))) {
@@ -635,7 +703,7 @@ abstract class FileSystemEntity {
     // Don't handle argument errors here.
     if (path is! String) return path;
     if (path.isEmpty) path = '.';
-    if (Platform.operatingSystem == 'windows') {
+    if (Platform.isWindows) {
       while (!path.endsWith(Platform.pathSeparator) && !path.endsWith('/')) {
         path = "$path${Platform.pathSeparator}";
       }
@@ -767,7 +835,7 @@ class FileSystemMoveEvent extends FileSystemEvent {
 
 
 class _FileSystemWatcher {
-  external static Stream<FileSystemEvent> watch(
+  external static Stream<FileSystemEvent> _watch(
       String path, int events, bool recursive);
   external static bool get isSupported;
 }

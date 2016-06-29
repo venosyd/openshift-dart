@@ -15,9 +15,13 @@ abstract class Link implements FileSystemEntity {
   factory Link(String path) => new _Link(path);
 
   /**
-   * Create a Lint object from a URI.
+   * Creates a [Link] object.
    *
-   * If [uri] cannot reference a link this throws [UnsupportedError].
+   * If [path] is a relative path, it will be interpreted relative to the
+   * current working directory (see [Directory.current]), when used.
+   *
+   * If [path] is an absolute path, it will be immune to changes to the
+   * current working directory.
    */
   factory Link.fromUri(Uri uri) => new Link(uri.toFilePath());
 
@@ -163,13 +167,13 @@ class _Link extends FileSystemEntity implements Link {
   FileStat statSync() => FileStat.statSync(path);
 
   Future<Link> create(String target, {bool recursive: false}) {
-    if (Platform.operatingSystem == 'windows') {
+    if (Platform.isWindows) {
       target = _makeWindowsLinkTarget(target);
     }
     var result = recursive ? parent.create(recursive: true)
                            : new Future.value(null);
     return result
-      .then((_) => _IOService.dispatch(_FILE_CREATE_LINK, [path, target]))
+      .then((_) => _IOService._dispatch(_FILE_CREATE_LINK, [path, target]))
       .then((response) {
         if (_isErrorResponse(response)) {
           throw _exceptionFromResponse(
@@ -183,7 +187,7 @@ class _Link extends FileSystemEntity implements Link {
     if (recursive) {
       parent.createSync(recursive: true);
     }
-    if (Platform.operatingSystem == 'windows') {
+    if (Platform.isWindows) {
       target = _makeWindowsLinkTarget(target);
     }
     var result = _File._createLink(path, target);
@@ -219,14 +223,14 @@ class _Link extends FileSystemEntity implements Link {
     // Atomically changing a link can be done by creating the new link, with
     // a different name, and using the rename() posix call to move it to
     // the old name atomically.
-    return delete().then((_) => create(target));
+    return delete().then/*<Link>*/((_) => create(target));
   }
 
   Future<Link> _delete({bool recursive: false}) {
     if (recursive) {
       return new Directory(path).delete(recursive: true).then((_) => this);
     }
-    return _IOService.dispatch(_FILE_DELETE_LINK, [path]).then((response) {
+    return _IOService._dispatch(_FILE_DELETE_LINK, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "Cannot delete link", path);
       }
@@ -243,7 +247,7 @@ class _Link extends FileSystemEntity implements Link {
   }
 
   Future<Link> rename(String newPath) {
-    return _IOService.dispatch(_FILE_RENAME_LINK, [path, newPath])
+    return _IOService._dispatch(_FILE_RENAME_LINK, [path, newPath])
         .then((response) {
           if (_isErrorResponse(response)) {
             throw _exceptionFromResponse(
@@ -260,7 +264,7 @@ class _Link extends FileSystemEntity implements Link {
   }
 
   Future<String> target() {
-    return _IOService.dispatch(_FILE_LINK_TARGET, [path]).then((response) {
+    return _IOService._dispatch(_FILE_LINK_TARGET, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(
             response, "Cannot get target of link", path);

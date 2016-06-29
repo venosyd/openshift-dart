@@ -66,8 +66,8 @@ class Utf8Codec extends Encoding {
     return new Utf8Decoder(allowMalformed: allowMalformed).convert(codeUnits);
   }
 
-  Converter<String, List<int>> get encoder => new Utf8Encoder();
-  Converter<List<int>, String> get decoder {
+  Utf8Encoder get encoder => const Utf8Encoder();
+  Utf8Decoder get decoder {
     return new Utf8Decoder(allowMalformed: _allowMalformed);
   }
 }
@@ -76,22 +76,34 @@ class Utf8Codec extends Encoding {
  * This class converts strings to their UTF-8 code units (a list of
  * unsigned 8-bit integers).
  */
-class Utf8Encoder extends Converter<String, List<int>> {
+class Utf8Encoder extends Converter<String, List<int>>
+    implements ChunkedConverter<String, List<int>, String, List<int>> {
 
   const Utf8Encoder();
 
   /**
    * Converts [string] to its UTF-8 code units (a list of
    * unsigned 8-bit integers).
+   *
+   * If [start] and [end] are provided, only the substring
+   * `string.substring(start, end)` is converted.
    */
-  List<int> convert(String string) {
+  List<int> convert(String string, [int start = 0, int end]) {
+    int stringLength = string.length;
+    RangeError.checkValidRange(start, end, stringLength);
+    if (end == null) end = stringLength;
+    int length = end - start;
+    if (length == 0) return new Uint8List(0);
     // Create a new encoder with a length that is guaranteed to be big enough.
-    // A single code unit uses at most 3 bytes. Two code units at most 4.
-    _Utf8Encoder encoder = new _Utf8Encoder.withBufferSize(string.length * 3);
-    int endPosition = encoder._fillBuffer(string, 0, string.length);
-    assert(endPosition >= string.length - 1);
-    if (endPosition != string.length) {
-      int lastCodeUnit = string.codeUnitAt(string.length - 1);
+    // A single code unit uses at most 3 bytes, a surrogate pair at most 4.
+    _Utf8Encoder encoder = new _Utf8Encoder.withBufferSize(length * 3);
+    int endPosition = encoder._fillBuffer(string, start, end);
+    assert(endPosition >= end - 1);
+    if (endPosition != end) {
+      // Encoding skipped the last code unit.
+      // That can only happen if the last code unit is a leadsurrogate.
+      // Force encoding of the lead surrogate by itself.
+      int lastCodeUnit = string.codeUnitAt(end - 1);
       assert(_isLeadSurrogate(lastCodeUnit));
       // We use a non-surrogate as `nextUnit` so that _writeSurrogate just
       // writes the lead-surrogate.
@@ -107,8 +119,7 @@ class Utf8Encoder extends Converter<String, List<int>> {
    * The converter works more efficiently if the given [sink] is a
    * [ByteConversionSink].
    */
-  StringConversionSink startChunkedConversion(
-      ChunkedConversionSink<List<int>> sink) {
+  StringConversionSink startChunkedConversion(Sink<List<int>> sink) {
     if (sink is! ByteConversionSink) {
       sink = new ByteConversionSink.from(sink);
     }
@@ -133,8 +144,12 @@ class _Utf8Encoder {
   _Utf8Encoder() : this.withBufferSize(_DEFAULT_BYTE_BUFFER_SIZE);
 
   _Utf8Encoder.withBufferSize(int bufferSize)
-      // TODO(11971, floitsch): use Uint8List instead of normal lists.
-      : _buffer = new List<int>(bufferSize);
+      : _buffer = _createBuffer(bufferSize);
+
+  /**
+   * Allow an implementation to pick the most efficient way of storing bytes.
+   */
+  static List<int> _createBuffer(int size) => new Uint8List(size);
 
   /**
    * Tries to combine the given [leadingSurrogate] with the [nextCodeUnit] and
@@ -290,7 +305,9 @@ class _Utf8EncoderSink extends _Utf8Encoder with StringConversionSinkMixin {
  * This class converts UTF-8 code units (lists of unsigned 8-bit integers)
  * to a string.
  */
-class Utf8Decoder extends Converter<List<int>, String> {
+class Utf8Decoder extends Converter<List<int>, String>
+    implements ChunkedConverter<List<int>, String, List<int>, String> {
+
   final bool _allowMalformed;
 
   /**
@@ -310,13 +327,26 @@ class Utf8Decoder extends Converter<List<int>, String> {
    * Converts the UTF-8 [codeUnits] (a list of unsigned 8-bit integers) to the
    * corresponding string.
    *
+   * Uses the code units from [start] to, but no including, [end].
+   * If [end] is omitted, it defaults to `codeUnits.length`.
+   *
    * If the [codeUnits] start with a leading [UNICODE_BOM_CHARACTER_RUNE] this
    * character is discarded.
    */
-  String convert(List<int> codeUnits) {
+  String convert(List<int> codeUnits, [int start = 0, int end]) {
+    // Allow the implementation to intercept and specialize based on the type
+    // of codeUnits.
+    String result = _convertIntercepted(_allowMalformed, codeUnits, start, end);
+    if (result != null) {
+      return result;
+    }
+
+    int length = codeUnits.length;
+    RangeError.checkValidRange(start, end, length);
+    if (end == null) end = length;
     StringBuffer buffer = new StringBuffer();
     _Utf8Decoder decoder = new _Utf8Decoder(buffer, _allowMalformed);
-    decoder.convert(codeUnits, 0, codeUnits.length);
+    decoder.convert(codeUnits, start, end);
     decoder.close();
     return buffer.toString();
   }
@@ -327,8 +357,7 @@ class Utf8Decoder extends Converter<List<int>, String> {
    * The converter works more efficiently if the given [sink] is a
    * [StringConversionSink].
    */
-  ByteConversionSink startChunkedConversion(
-      ChunkedConversionSink<String> sink) {
+  ByteConversionSink startChunkedConversion(Sink<String> sink) {
     StringConversionSink stringSink;
     if (sink is StringConversionSink) {
       stringSink = sink;
@@ -340,6 +369,12 @@ class Utf8Decoder extends Converter<List<int>, String> {
 
   // Override the base-classes bind, to provide a better type.
   Stream<String> bind(Stream<List<int>> stream) => super.bind(stream);
+
+  external Converter<List<int>, dynamic/*=T*/> fuse/*<T>*/(
+      Converter<String, dynamic/*=T*/> next);
+
+  external static String _convertIntercepted(
+      bool allowMalformed, List<int> codeUnits, int start, int end);
 }
 
 // UTF-8 constants.
@@ -355,8 +390,6 @@ const int _SURROGATE_VALUE_MASK = 0x3FF;
 const int _LEAD_SURROGATE_MIN = 0xD800;
 const int _TAIL_SURROGATE_MIN = 0xDC00;
 
-bool _isSurrogate(int codeUnit) =>
-    (codeUnit & _SURROGATE_MASK) == _LEAD_SURROGATE_MIN;
 bool _isLeadSurrogate(int codeUnit) =>
     (codeUnit & _SURROGATE_TAG_MASK) == _LEAD_SURROGATE_MIN;
 bool _isTailSurrogate(int codeUnit) =>
@@ -364,7 +397,6 @@ bool _isTailSurrogate(int codeUnit) =>
 int _combineSurrogatePair(int lead, int tail) =>
     0x10000 + ((lead & _SURROGATE_VALUE_MASK) << 10)
             | (tail & _SURROGATE_VALUE_MASK);
-
 
 /**
  * Decodes UTF-8.
@@ -421,6 +453,22 @@ class _Utf8Decoder {
     _expectedUnits = 0;
     _extraUnits = 0;
 
+    int scanOneByteCharacters(units, int from) {
+      final to = endIndex;
+      final mask = _ONE_BYTE_LIMIT;
+      for (var i = from; i < to; i++) {
+        final unit = units[i];
+        if ((unit & mask) != unit) return i - from;
+      }
+      return to - from;
+    }
+
+    void addSingleBytes(int from, int to) {
+      assert(from >= startIndex && from <= endIndex);
+      assert(to >= startIndex && to <= endIndex);
+      _stringSink.write(new String.fromCharCodes(codeUnits, from, to));
+    }
+
     int i = startIndex;
     loop: while (true) {
       multibyte: if (expectedUnits > 0) {
@@ -468,6 +516,13 @@ class _Utf8Decoder {
       }
 
       while (i < endIndex) {
+        int oneBytes = scanOneByteCharacters(codeUnits, i);
+        if (oneBytes > 0) {
+          _isFirstCharacter = false;
+          addSingleBytes(i, i + oneBytes);
+          i += oneBytes;
+          if (i == endIndex) break;
+        }
         int unit = codeUnits[i++];
         // TODO(floitsch): the way we test we could potentially allow
         // units that are too large, if they happen to have the
@@ -481,10 +536,8 @@ class _Utf8Decoder {
                 "Negative UTF-8 code unit: -0x${(-unit).toRadixString(16)}");
           }
           _stringSink.writeCharCode(UNICODE_REPLACEMENT_CHARACTER_RUNE);
-        } else if (unit <= _ONE_BYTE_LIMIT) {
-          _isFirstCharacter = false;
-          _stringSink.writeCharCode(unit);
         } else {
+          assert(unit > _ONE_BYTE_LIMIT);
           if ((unit & 0xE0) == 0xC0) {
             value = unit & 0x1F;
             expectedUnits = extraUnits = 1;

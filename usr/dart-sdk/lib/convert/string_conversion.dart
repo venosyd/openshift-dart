@@ -17,12 +17,11 @@ part of dart.convert;
  * [StringConversionSinkMixin], to ensure that their class covers the newly
  * added methods.
  */
-abstract class StringConversionSink
-    extends ChunkedConversionSink<String> {
+abstract class StringConversionSink extends ChunkedConversionSink<String> {
   StringConversionSink();
   factory StringConversionSink.withCallback(void callback(String accumulated))
       = _StringCallbackSink;
-  factory StringConversionSink.from(ChunkedConversionSink<String> sink)
+  factory StringConversionSink.from(Sink<String> sink)
       = _StringAdapterSink;
 
   /**
@@ -93,13 +92,14 @@ class _ClosableStringSink implements ClosableStringSink {
 
   _ClosableStringSink(this._sink, this._callback);
 
-  void close() => _callback();
+  void close() { _callback(); }
 
-  void writeCharCode(int charCode) => _sink.writeCharCode(charCode);
-  void write(Object o) => _sink.write(o);
-  void writeln([Object o = ""]) => _sink.writeln(o);
-  void writeAll(Iterable objects, [String separator = ""])
-      => _sink.writeAll(objects, separator);
+  void writeCharCode(int charCode) { _sink.writeCharCode(charCode); }
+  void write(Object o) { _sink.write(o); }
+  void writeln([Object o = ""]) { _sink.writeln(o); }
+  void writeAll(Iterable objects, [String separator = ""]) {
+    _sink.writeAll(objects, separator);
+  }
 }
 
 /**
@@ -129,7 +129,6 @@ class _StringConversionSinkAsStringSinkAdapter implements ClosableStringSink {
 
   void write(Object o) {
     if (_buffer.isNotEmpty) _flush();
-    String str = o.toString();
     _chunkedSink.add(o.toString());
   }
 
@@ -178,7 +177,7 @@ abstract class StringConversionSinkMixin implements StringConversionSink {
   void addSlice(String str, int start, int end, bool isLast);
   void close();
 
-  void add(String str) => addSlice(str, 0, str.length, false);
+  void add(String str) { addSlice(str, 0, str.length, false); }
 
   ByteConversionSink asUtf8Sink(bool allowMalformed) {
     return new _Utf8ConversionSink(this, allowMalformed);
@@ -208,7 +207,7 @@ class _StringSinkConversionSink extends StringConversionSinkBase {
     if (isLast) close();
   }
 
-  void add(String str) => _stringSink.write(str);
+  void add(String str) { _stringSink.write(str); }
 
   ByteConversionSink asUtf8Sink(bool allowMalformed) {
     return new _Utf8StringSinkAdapter(this, _stringSink, allowMalformed);
@@ -250,11 +249,11 @@ class _StringCallbackSink extends _StringSinkConversionSink {
  * ChunkedConversionSink) are redirected to the `add` method.
  */
 class _StringAdapterSink extends StringConversionSinkBase {
-  final ChunkedConversionSink<String> _sink;
+  final Sink<String> _sink;
 
   _StringAdapterSink(this._sink);
 
-  void add(String str) => _sink.add(str);
+  void add(String str) { _sink.add(str); }
 
   void addSlice(String str, int start, int end, bool isLast) {
     if (start == 0 && end == str.length) {
@@ -265,7 +264,7 @@ class _StringAdapterSink extends StringConversionSinkBase {
     if (isLast) close();
   }
 
-  void close() => _sink.close();
+  void close() { _sink.close(); }
 }
 
 
@@ -274,16 +273,15 @@ class _StringAdapterSink extends StringConversionSinkBase {
  */
 class _Utf8StringSinkAdapter extends ByteConversionSink {
   final _Utf8Decoder _decoder;
-  final ChunkedConversionSink _chunkedSink;
+  final Sink _sink;
 
-  _Utf8StringSinkAdapter(ChunkedConversionSink chunkedSink,
-                         StringSink sink, bool allowMalformed)
-      : _chunkedSink = chunkedSink,
-        _decoder = new _Utf8Decoder(sink, allowMalformed);
+  _Utf8StringSinkAdapter(this._sink,
+                         StringSink stringSink, bool allowMalformed)
+      : _decoder = new _Utf8Decoder(stringSink, allowMalformed);
 
   void close() {
     _decoder.close();
-    if(_chunkedSink != null) _chunkedSink.close();
+    if(_sink != null) _sink.close();
   }
 
   void add(List<int> chunk) {

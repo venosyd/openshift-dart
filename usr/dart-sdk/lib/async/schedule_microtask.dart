@@ -6,32 +6,101 @@ part of dart.async;
 
 typedef void _AsyncCallback();
 
-bool _callbacksAreEnqueued = false;
-Queue<_AsyncCallback> _asyncCallbacks = new Queue<_AsyncCallback>();
-
-void _asyncRunCallback() {
-  // As long as we are iterating over the registered callbacks we don't
-  // unset the [_callbacksAreEnqueued] boolean.
-  while (!_asyncCallbacks.isEmpty) {
-    Function callback = _asyncCallbacks.removeFirst();
-    try {
-      callback();
-    } catch (e) {
-      _AsyncRun._scheduleImmediate(_asyncRunCallback);
-      rethrow;
-    }
-  }
-  // Any new callback must register a callback function now.
-  _callbacksAreEnqueued = false;
+class _AsyncCallbackEntry {
+  final _AsyncCallback callback;
+  _AsyncCallbackEntry next;
+  _AsyncCallbackEntry(this.callback);
 }
 
-void _scheduleAsyncCallback(callback) {
-  // Optimizing a group of Timer.run callbacks to be executed in the
-  // same Timer callback.
-  _asyncCallbacks.add(callback);
-  if (!_callbacksAreEnqueued) {
-    _AsyncRun._scheduleImmediate(_asyncRunCallback);
-    _callbacksAreEnqueued = true;
+/** Head of single linked list of pending callbacks. */
+_AsyncCallbackEntry _nextCallback;
+/** Tail of single linked list of pending callbacks. */
+_AsyncCallbackEntry _lastCallback;
+/**
+ * Tail of priority callbacks added by the currently executing callback.
+ *
+ * Priority callbacks are put at the beginning of the
+ * callback queue, so that if one callback schedules more than one
+ * priority callback, they are still enqueued in scheduling order.
+ */
+_AsyncCallbackEntry _lastPriorityCallback;
+/**
+ * Whether we are currently inside the callback loop.
+ *
+ * If we are inside the loop, we never need to schedule the loop,
+ * even if adding a first element.
+ */
+bool _isInCallbackLoop = false;
+
+void _microtaskLoop() {
+  while (_nextCallback != null) {
+    _lastPriorityCallback = null;
+    _AsyncCallbackEntry entry = _nextCallback;
+    _nextCallback = entry.next;
+    if (_nextCallback == null) _lastCallback = null;
+    (entry.callback)();
+  }
+}
+
+void _startMicrotaskLoop() {
+  _isInCallbackLoop = true;
+  try {
+    // Moved to separate function because try-finally prevents
+    // good optimization.
+    _microtaskLoop();
+  } finally {
+    _lastPriorityCallback = null;
+    _isInCallbackLoop = false;
+    if (_nextCallback != null) {
+      _AsyncRun._scheduleImmediate(_startMicrotaskLoop);
+    }
+  }
+}
+
+/**
+ * Schedules a callback to be called as a microtask.
+ *
+ * The microtask is called after all other currently scheduled
+ * microtasks, but as part of the current system event.
+ */
+void _scheduleAsyncCallback(_AsyncCallback callback) {
+  _AsyncCallbackEntry newEntry = new _AsyncCallbackEntry(callback);
+  if (_nextCallback == null) {
+    _nextCallback = _lastCallback = newEntry;
+    if (!_isInCallbackLoop) {
+      _AsyncRun._scheduleImmediate(_startMicrotaskLoop);
+    }
+  } else {
+    _lastCallback.next = newEntry;
+    _lastCallback = newEntry;
+  }
+}
+
+/**
+ * Schedules a callback to be called before all other currently scheduled ones.
+ *
+ * This callback takes priority over existing scheduled callbacks.
+ * It is only used internally to give higher priority to error reporting.
+ *
+ * Is always run in the root zone.
+ */
+void _schedulePriorityAsyncCallback(_AsyncCallback callback) {
+  if (_nextCallback == null) {
+    _scheduleAsyncCallback(callback);
+    _lastPriorityCallback = _lastCallback;
+    return;
+  }
+  _AsyncCallbackEntry entry = new _AsyncCallbackEntry(callback);
+  if (_lastPriorityCallback == null) {
+    entry.next = _nextCallback;
+    _nextCallback = _lastPriorityCallback = entry;
+  } else {
+    entry.next = _lastPriorityCallback.next;
+    _lastPriorityCallback.next = entry;
+    _lastPriorityCallback = entry;
+    if (entry.next == null) {
+      _lastCallback = entry;
+    }
   }
 }
 
@@ -46,11 +115,11 @@ void _scheduleAsyncCallback(callback) {
  * callbacks through this method. For example the following program runs
  * the callbacks without ever giving the Timer callback a chance to execute:
  *
- *     Timer.run(() { print("executed"); });  // Will never be executed.
- *     foo() {
- *       scheduleMicrotask(foo);  // Schedules [foo] in front of other events.
- *     }
  *     main() {
+ *       Timer.run(() { print("executed"); });  // Will never be executed.
+ *       foo() {
+ *         scheduleMicrotask(foo);  // Schedules [foo] in front of other events.
+ *       }
  *       foo();
  *     }
  *
@@ -61,10 +130,18 @@ void _scheduleAsyncCallback(callback) {
  * better asynchronous code with fewer surprises.
  */
 void scheduleMicrotask(void callback()) {
-  if (Zone.current == Zone.ROOT) {
+  _Zone currentZone = Zone.current;
+  if (identical(_ROOT_ZONE, currentZone)) {
     // No need to bind the callback. We know that the root's scheduleMicrotask
     // will be invoked in the root zone.
-    Zone.current.scheduleMicrotask(callback);
+    _rootScheduleMicrotask(null, null, _ROOT_ZONE, callback);
+    return;
+  }
+  _ZoneFunction implementation = currentZone._scheduleMicrotask;
+  if (identical(_ROOT_ZONE, implementation.zone) &&
+      _ROOT_ZONE.inSameErrorZone(currentZone)) {
+    _rootScheduleMicrotask(null, null, currentZone,
+                           currentZone.registerCallback(callback));
     return;
   }
   Zone.current.scheduleMicrotask(

@@ -10,33 +10,41 @@ class _Platform {
   external static String _operatingSystem();
   external static _localHostname();
   external static _executable();
+  external static _resolvedExecutable();
+  /**
+   * Retrieve the entries of the process environment.
+   *
+   * The result is an [Iterable] of strings, where each string represents
+   * an environment entry.
+   *
+   * Environment entries should be strings containing
+   * a non-empty name and a value separated by a '=' character.
+   * The name does not contain a '=' character,
+   * so the name is everything up to the first '=' character.
+   * Values are everything after the first '=' charcacter.
+   * A value may contain further '=' characters, and it may be empty.
+   *
+   * Returns an [OSError] if retrieving the environment fails.
+   */
   external static _environment();
   external static List<String> _executableArguments();
   external static String _packageRoot();
+  external static String _packageConfig();
   external static String _version();
 
   static String executable = _executable();
+  static String resolvedExecutable = _resolvedExecutable();
   static String packageRoot = _packageRoot();
+  static String packageConfig = _packageConfig();
 
   // Cache the OS environemnt. This can be an OSError instance if
   // retrieving the environment failed.
-  static var _environmentCache;
+  static var/*OSError|Map<String,String>*/ _environmentCache;
 
   static int get numberOfProcessors => _numberOfProcessors();
   static String get pathSeparator => _pathSeparator();
   static String get operatingSystem => _operatingSystem();
-  static Uri script = _script();
-  static Uri _script() {
-    // The embedder (Dart executable) creates the Platform._nativeScript field.
-    var s = Platform._nativeScript;
-    if (s.startsWith('http:') ||
-        s.startsWith('https:') ||
-        s.startsWith('file:')) {
-      return Uri.parse(s);
-    } else {
-      return Uri.base.resolveUri(new Uri.file(s));
-    }
-  }
+  static Uri script;
 
   static String get localHostname {
     var result = _localHostname();
@@ -54,24 +62,22 @@ class _Platform {
       var env = _environment();
       if (env is !OSError) {
         var isWindows = operatingSystem == 'windows';
-        var result = isWindows ? new _CaseInsensitiveStringMap() : new Map();
+        var result = isWindows
+            ? new _CaseInsensitiveStringMap<String>()
+            : new Map<String, String>();
         for (var str in env) {
-          // When running on Windows through cmd.exe there are strange
-          // environment variables that are used to record the current
-          // working directory for each drive and the exit code for the
-          // last command. As an example: '=A:=A:\subdir' records the
-          // current working directory on the 'A' drive.  In order to
-          // handle these correctly we search for a second occurrence of
-          // of '=' in the string if the first occurrence is at index 0.
+          // The Strings returned by [_environment()] are expected to be
+          // valid environment entries, but exceptions have been seen
+          // (e.g., an entry of just '=' has been seen on OS/X).
+          // Invalid entries (lines without a '=' or with an empty name)
+          // are discarded.
           var equalsIndex = str.indexOf('=');
-          if (equalsIndex == 0) {
-            equalsIndex = str.indexOf('=', 1);
+          if (equalsIndex > 0) {
+            result[str.substring(0, equalsIndex)] =
+                str.substring(equalsIndex + 1);
           }
-          assert(equalsIndex != -1);
-          result[str.substring(0, equalsIndex)] =
-              str.substring(equalsIndex + 1);
         }
-        _environmentCache = new _UnmodifiableMap(result);
+        _environmentCache = new UnmodifiableMapView<String, String>(result);
       } else {
         _environmentCache = env;
       }
@@ -80,7 +86,7 @@ class _Platform {
     if (_environmentCache is OSError) {
       throw _environmentCache;
     } else {
-      return _environmentCache;
+      return _environmentCache as Object/*=Map<String, String>*/;
     }
   }
 
@@ -90,35 +96,28 @@ class _Platform {
 // Environment variables are case-insensitive on Windows. In order
 // to reflect that we use a case-insensitive string map on Windows.
 class _CaseInsensitiveStringMap<V> implements Map<String, V> {
-  Map<String, V> _map;
+  final Map<String, V> _map = new Map<String, V>();
 
-  _CaseInsensitiveStringMap() : _map = new Map<String, V>();
-
-  _CaseInsensitiveStringMap.from(Map<String, V> other)
-      : _map = new Map<String, V>() {
-    other.forEach((String key, V value) {
-      _map[key.toUpperCase()] = value;
-    });
-  }
-
-  bool containsKey(String key) => _map.containsKey(key.toUpperCase());
+  bool containsKey(Object key) =>
+      key is String && _map.containsKey(key.toUpperCase());
   bool containsValue(Object value) => _map.containsValue(value);
-  V operator [](String key) => _map[key.toUpperCase()];
+  V operator [](Object key) => key is String ? _map[key.toUpperCase()] : null;
   void operator []=(String key, V value) {
     _map[key.toUpperCase()] = value;
   }
   V putIfAbsent(String key, V ifAbsent()) {
-    _map.putIfAbsent(key.toUpperCase(), ifAbsent);
+    return _map.putIfAbsent(key.toUpperCase(), ifAbsent);
   }
-  addAll(Map other) {
+  void addAll(Map<String, V> other) {
     other.forEach((key, value) => this[key.toUpperCase()] = value);
   }
-  V remove(String key) => _map.remove(key.toUpperCase());
-  void clear() => _map.clear();
-  void forEach(void f(String key, V value)) => _map.forEach(f);
+  V remove(Object key) => key is String ? _map.remove(key.toUpperCase()) : null;
+  void clear() { _map.clear(); }
+  void forEach(void f(String key, V value)) { _map.forEach(f); }
   Iterable<String> get keys => _map.keys;
   Iterable<V> get values => _map.values;
   int get length => _map.length;
   bool get isEmpty => _map.isEmpty;
   bool get isNotEmpty => _map.isNotEmpty;
+  String toString() => _map.toString();
 }

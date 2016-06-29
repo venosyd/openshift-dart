@@ -14,6 +14,34 @@ part of dart.core;
  * them programmatically.
  */
 abstract class StackTrace {
+  StackTrace();  // In case existing classes extend StackTrace.
+
+  /**
+   * Create a `StackTrace` object from [stackTraceString].
+   *
+   * The created stack trace will have a `toString` method returning
+   * `stackTraceString`.
+   *
+   * The `stackTraceString` can be a string returned by some other
+   * stack trace, or it can be any string at all.
+   * If the string doesn't look like a stack trace, code that interprets
+   * stack traces is likely to fail, so fake stack traces should be used
+   * with care.
+   */
+  factory StackTrace.fromString(String stackTraceString) = _StringStackTrace;
+
+  /**
+   * Returns a representation of the current stack trace.
+   *
+   * This is similar to what can be achieved by doing:
+   *
+   *     try { throw 0; } catch (_, stack) { return stack; }
+   *
+   * The getter achieves this without throwing, except on platforms that
+   * have no other way to get a stack trace.
+   */
+  external static StackTrace get current;
+
   /**
    * Returns a [String] representation of the stack trace.
    *
@@ -25,3 +53,8 @@ abstract class StackTrace {
   String toString();
 }
 
+class _StringStackTrace implements StackTrace {
+  final String _stackTrace;
+  _StringStackTrace(this._stackTrace);
+  String toString() => _stackTrace;
+}

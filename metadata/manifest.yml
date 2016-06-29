@@ -1,13 +1,13 @@
 Name: dart
-Display-Name: DartLang 1.1
+Display-Name: DartLang 2.0
 Description: Provides an empty Dartlang based cartridge
 License: ASL 2.0
 License-Url: http://www.apache.org/licenses/LICENSE-2.0.txt
 Cartridge-Short-Name: DART
-Version: '1.1'
-Cartridge-Version: 1.0
-Cartridge-Vendor: kraman
-Source-Url: 'https://github.com/kraman/openshift-dart/archive/master.zip'
+Version: '2.0'
+Cartridge-Version: 2.0
+Cartridge-Vendor: venosyd, kraman
+Source-Url: 'https://github.com/venosyd/openshift-dart/archive/master.zip'
 Install-Build-Required: true
 Categories:
 - web_framework

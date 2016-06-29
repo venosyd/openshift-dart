@@ -46,16 +46,17 @@ class HttpDate {
     StringBuffer sb = new StringBuffer()
         ..write(wkday[d.weekday - 1])
         ..write(", ")
+        ..write(d.day <= 9 ? "0" : "")
         ..write(d.day.toString())
         ..write(" ")
         ..write(month[d.month - 1])
         ..write(" ")
         ..write(d.year.toString())
-        ..write(d.hour < 9 ? " 0" : " ")
+        ..write(d.hour <= 9 ? " 0" : " ")
         ..write(d.hour.toString())
-        ..write(d.minute < 9 ? ":0" : ":")
+        ..write(d.minute <= 9 ? ":0" : ":")
         ..write(d.minute.toString())
-        ..write(d.second < 9 ? ":0" : ":")
+        ..write(d.second <= 9 ? ":0" : ":")
         ..write(d.second.toString())
         ..write(" GMT");
     return sb.toString();
@@ -71,8 +72,8 @@ class HttpDate {
    *     Thursday, 1-Jan-1970 00:00:00 GMT
    *     Thu Jan  1 00:00:00 1970
    *
-   * For more information see [RFC-2616 section 3.1.1]
-   * (http://tools.ietf.org/html/rfc2616#section-3.3.1
+   * For more information see [RFC-2616 section
+   * 3.1.1](http://tools.ietf.org/html/rfc2616#section-3.3.1
    * "RFC-2616 section 3.1.1").
    */
   static DateTime parse(String date) {

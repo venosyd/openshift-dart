@@ -41,40 +41,46 @@ class SecureServerSocket extends Stream<SecureSocket> {
    * the system.
    *
    * Incoming client connections are promoted to secure connections, using
-   * the server certificate given by [certificateName].
+   * the server certificate and key set in [context].
    *
    * [address] must be given as a numeric address, not a host name.
-   *
-   * [certificateName] is the nickname or the distinguished name (DN) of
-   * the certificate in the certificate database. It is looked up in the
-   * NSS certificate database set by SecureSocket.setCertificateDatabase.
-   * If [certificateName] contains "CN=", it is assumed to be a distinguished
-   * name.  Otherwise, it is looked up as a nickname.
    *
    * To request or require that clients authenticate by providing an SSL (TLS)
    * client certificate, set the optional parameter [requestClientCertificate]
    * or [requireClientCertificate] to true.  Requiring a certificate implies
-   * requesting a certificate, so one doesn't need to set both to true.
+   * requesting a certificate, so setting both is redundant.
    * To check whether a client certificate was received, check
    * SecureSocket.peerCertificate after connecting.  If no certificate
    * was received, the result will be null.
+   *
+   * The optional argument [shared] specifies whether additional
+   * SecureServerSocket objects can bind to the same combination of `address`,
+   * `port` and `v6Only`.  If `shared` is `true` and more `SecureServerSocket`s
+   * from this isolate or other isolates are bound to the port, then the
+   * incoming connections will be distributed among all the bound
+   * `SecureServerSocket`s. Connections can be distributed over multiple
+   * isolates this way.
    */
   static Future<SecureServerSocket> bind(
       address,
       int port,
-      String certificateName,
+      SecurityContext context,
       {int backlog: 0,
        bool v6Only: false,
        bool requestClientCertificate: false,
-       bool requireClientCertificate: false}) {
+       bool requireClientCertificate: false,
+       List<String> supportedProtocols,
+       bool shared: false}) {
     return RawSecureServerSocket.bind(
         address,
         port,
-        certificateName,
+        context,
         backlog: backlog,
         v6Only: v6Only,
         requestClientCertificate: requestClientCertificate,
-        requireClientCertificate: requireClientCertificate).then(
+        requireClientCertificate: requireClientCertificate,
+        supportedProtocols: supportedProtocols,
+        shared: shared).then(
             (serverSocket) => new SecureServerSocket._(serverSocket));
   }
 
@@ -104,6 +110,8 @@ class SecureServerSocket extends Stream<SecureSocket> {
    * is fully closed and is no longer bound.
    */
   Future<SecureServerSocket> close() => _socket.close().then((_) => this);
+
+  void set _owner(owner) { _socket._owner = owner; }
 }
 
 
@@ -114,19 +122,20 @@ class SecureServerSocket extends Stream<SecureSocket> {
  * See [RawSecureSocket] for more info.
  */
 class RawSecureServerSocket extends Stream<RawSecureSocket> {
-  RawServerSocket _socket;
+  final RawServerSocket _socket;
   StreamController<RawSecureSocket> _controller;
   StreamSubscription<RawSocket> _subscription;
-  final String certificateName;
+  final SecurityContext _context;
   final bool requestClientCertificate;
   final bool requireClientCertificate;
+  final List<String> supportedProtocols;
   bool _closed = false;
 
-  RawSecureServerSocket._(RawServerSocket serverSocket,
-                          this.certificateName,
+  RawSecureServerSocket._(this._socket,
+                          this._context,
                           this.requestClientCertificate,
-                          this.requireClientCertificate) {
-    _socket = serverSocket;
+                          this.requireClientCertificate,
+                          this.supportedProtocols) {
     _controller = new StreamController<RawSecureSocket>(
         sync: true,
         onListen: _onSubscriptionStateChange,
@@ -161,15 +170,9 @@ class RawSecureServerSocket extends Stream<RawSecureSocket> {
    * the system.
    *
    * Incoming client connections are promoted to secure connections,
-   * using the server certificate given by [certificateName].
+   * using the server certificate and key set in [context].
    *
    * [address] must be given as a numeric address, not a host name.
-   *
-   * [certificateName] is the nickname or the distinguished name (DN) of
-   * the certificate in the certificate database. It is looked up in the
-   * NSS certificate database set by SecureSocket.setCertificateDatabase.
-   * If [certificateName] contains "CN=", it is assumed to be a distinguished
-   * name.  Otherwise, it is looked up as a nickname.
    *
    * To request or require that clients authenticate by providing an SSL (TLS)
    * client certificate, set the optional parameters requestClientCertificate or
@@ -177,21 +180,33 @@ class RawSecureServerSocket extends Stream<RawSecureSocket> {
    * need to specify both.  To check whether a client certificate was received,
    * check SecureSocket.peerCertificate after connecting.  If no certificate
    * was received, the result will be null.
+   *
+   * The optional argument [shared] specifies whether additional
+   * RawSecureServerSocket objects can bind to the same combination of
+   * `address`, `port` and `v6Only`.  If `shared` is `true` and more
+   * `RawSecureServerSocket`s from this isolate or other isolates are bound to
+   * the port, then the incoming connections will be distributed among all the
+   * bound `RawSecureServerSocket`s. Connections can be distributed over
+   * multiple isolates this way.
    */
   static Future<RawSecureServerSocket> bind(
-      String address,
+      address,
       int port,
-      String certificateName,
+      SecurityContext context,
       {int backlog: 0,
        bool v6Only: false,
        bool requestClientCertificate: false,
-       bool requireClientCertificate: false}) {
-    return RawServerSocket.bind(address, port, backlog: backlog, v6Only: v6Only)
+       bool requireClientCertificate: false,
+       List<String> supportedProtocols,
+       bool shared: false}) {
+    return RawServerSocket.bind(
+        address, port, backlog: backlog, v6Only: v6Only, shared: shared)
         .then((serverSocket) => new RawSecureServerSocket._(
             serverSocket,
-            certificateName,
+            context,
             requestClientCertificate,
-            requireClientCertificate));
+            requireClientCertificate,
+            supportedProtocols));
   }
 
   StreamSubscription<RawSecureSocket> listen(void onData(RawSecureSocket s),
@@ -235,30 +250,23 @@ class RawSecureServerSocket extends Stream<RawSecureSocket> {
     _RawSecureSocket.connect(
         connection.address,
         remotePort,
-        certificateName,
+        context: _context,
         is_server: true,
         socket: connection,
         requestClientCertificate: requestClientCertificate,
-        requireClientCertificate: requireClientCertificate)
+        requireClientCertificate: requireClientCertificate,
+        supportedProtocols: supportedProtocols)
     .then((RawSecureSocket secureConnection) {
       if (_closed) {
         secureConnection.close();
       } else {
         _controller.add(secureConnection);
       }
-    }).catchError((e) {
+    }).catchError((e, s) {
       if (!_closed) {
-        _controller.addError(e);
+        _controller.addError(e, s);
       }
     });
-  }
-
-  void _onError(e, [StackTrace stackTrace]) {
-    _controller.addError(e, stackTrace);
-  }
-
-  void _onDone() {
-    _controller.close();
   }
 
   void _onPauseStateChange() {
@@ -272,11 +280,15 @@ class RawSecureServerSocket extends Stream<RawSecureSocket> {
   void _onSubscriptionStateChange() {
     if (_controller.hasListener) {
       _subscription = _socket.listen(_onData,
-                                     onDone: _onDone,
-                                     onError: _onError);
+                                     onError: _controller.addError,
+                                     onDone: _controller.close);
     } else {
       close();
     }
+  }
+
+  void set _owner(owner) {
+    (_socket as dynamic)._owner = owner;
   }
 }
 

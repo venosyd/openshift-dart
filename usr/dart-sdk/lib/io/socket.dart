@@ -41,10 +41,14 @@ class InternetAddressType {
 
 
 /**
- * The [InternetAddress] is an object reflecting either a remote or a
- * local address. When combined with a port number, this represents a
- * endpoint that a socket can connect to or a listening socket can
- * bind to.
+ * An internet address.
+ *
+ * This object holds an internet address. If this internet address
+ * is the result of a DNS lookup, the address also holds the hostname
+ * used to make the lookup.
+ * An Internet address combined with a port number represents an
+ * endpoint to which a socket can connect or a listening socket can
+ * bind.
  */
 abstract class InternetAddress {
   /**
@@ -90,6 +94,13 @@ abstract class InternetAddress {
   String get host;
 
   /**
+   * Get the raw address of this [InternetAddress]. The result is either a
+   * 4 or 16 byte long list. The returned list is a copy, making it possible
+   * to change the list without modifying the [InternetAddress].
+   */
+  List<int> get rawAddress;
+
+  /**
    * Returns true if the [InternetAddress] is a loopback address.
    */
   bool get isLoopback;
@@ -130,12 +141,21 @@ abstract class InternetAddress {
    */
   external static Future<List<InternetAddress>> lookup(
       String host, {InternetAddressType type: InternetAddressType.ANY});
+
+  /**
+   * Clones the given [address] with the new [host].
+   *
+   * The [address] must be an [InternetAddress] that was created with one
+   * of the static methods of this class.
+   */
+  external static InternetAddress _cloneWithNewHost(
+      InternetAddress address, String host);
 }
 
 
 /**
- * A [NetworkInterface] represent an active network interface on the current
- * system. It contains a list of [InternetAddress]s, that's bound to the
+ * A [NetworkInterface] represents an active network interface on the current
+ * system. It contains a list of [InternetAddress]es that are bound to the
  * interface.
  */
 abstract class NetworkInterface {
@@ -150,10 +170,17 @@ abstract class NetworkInterface {
   String get index;
 
   /**
-   * Get a list of [InternetAddress]s currently bound to this
+   * Get a list of [InternetAddress]es currently bound to this
    * [NetworkInterface].
    */
   List<InternetAddress> get addresses;
+
+  /**
+   * Whether [list] is supported.
+   *
+   * [list] is currently unsupported on Android.
+   */
+  external static bool get listSupported;
 
   /**
    * Query the system for [NetworkInterface]s.
@@ -212,11 +239,19 @@ abstract class RawServerSocket implements Stream<RawSocket> {
    * backlog for the underlying OS listen setup. If [backlog] has the
    * value of [:0:] (the default) a reasonable value will be chosen by
    * the system.
+   *
+   * The optional argument [shared] specifies whether additional RawServerSocket
+   * objects can bind to the same combination of `address`, `port` and `v6Only`.
+   * If `shared` is `true` and more `RawServerSocket`s from this isolate or
+   * other isolates are bound to the port, then the incoming connections will be
+   * distributed among all the bound `RawServerSocket`s. Connections can be
+   * distributed over multiple isolates this way.
    */
   external static Future<RawServerSocket> bind(address,
                                                int port,
                                                {int backlog: 0,
-                                                bool v6Only: false});
+                                                bool v6Only: false,
+                                                bool shared: false});
 
   /**
    * Returns the port used by this socket.
@@ -273,11 +308,19 @@ abstract class ServerSocket implements Stream<Socket> {
    * backlog for the underlying OS listen setup. If [backlog] has the
    * value of [:0:] (the default) a reasonable value will be chosen by
    * the system.
+   *
+   * The optional argument [shared] specifies whether additional ServerSocket
+   * objects can bind to the same combination of `address`, `port` and `v6Only`.
+   * If `shared` is `true` and more `ServerSocket`s from this isolate or other
+   * isolates are bound to the port, then the incoming connections will be
+   * distributed among all the bound `ServerSocket`s. Connections can be
+   * distributed over multiple isolates this way.
    */
   external static Future<ServerSocket> bind(address,
                                             int port,
                                             {int backlog: 0,
-                                             bool v6Only: false});
+                                             bool v6Only: false,
+                                             bool shared: false});
 
   /**
    * Returns the port used by this socket.
@@ -295,6 +338,7 @@ abstract class ServerSocket implements Stream<Socket> {
    */
   Future<ServerSocket> close();
 }
+
 
 /**
  * The [SocketDirection] is used as a parameter to [Socket.close] and
@@ -345,10 +389,10 @@ class RawSocketEvent {
 
   const RawSocketEvent._(this._value);
   String toString() {
-    return ['RawSocketEvent:READ',
-            'RawSocketEvent:WRITE',
-            'RawSocketEvent:READ_CLOSED',
-            'RawSocketEvent:CLOSED'][_value];
+    return const ['RawSocketEvent:READ',
+                  'RawSocketEvent:WRITE',
+                  'RawSocketEvent:READ_CLOSED',
+                  'RawSocketEvent:CLOSED'][_value];
   }
 }
 
@@ -377,10 +421,17 @@ abstract class RawSocket implements Stream<RawSocketEvent> {
    * if the host-lookup or connection failed.
    *
    * [host] can either be a [String] or an [InternetAddress]. If [host] is a
-   * [String], [connect] will perform a [InternetAddress.lookup] and use
-   * the first value in the list.
+   * [String], [connect] will perform a [InternetAddress.lookup] and try
+   * all returned [InternetAddress]es, until connected. Unless a
+   * connection was established, the error from the first failing connection is
+   * returned.
+   *
+   * The argument [sourceAddress] can be used to specify the local
+   * address to bind when making the connection. `sourceAddress` can either
+   * be a `String` or an `InternetAddress`. If a `String` is passed it must
+   * hold a numeric IP address.
    */
-  external static Future<RawSocket> connect(host, int port);
+  external static Future<RawSocket> connect(host, int port, {sourceAddress});
 
   /**
    * Returns the number of received and non-read bytes in the socket that
@@ -463,15 +514,22 @@ abstract class RawSocket implements Stream<RawSocketEvent> {
  */
 abstract class Socket implements Stream<List<int>>, IOSink {
   /**
-   * Creats a new socket connection to the host and port and returns a [Future]
+   * Creates a new socket connection to the host and port and returns a [Future]
    * that will complete with either a [Socket] once connected or an error
    * if the host-lookup or connection failed.
    *
    * [host] can either be a [String] or an [InternetAddress]. If [host] is a
-   * [String], [connect] will perform a [InternetAddress.lookup] and use
-   * the first value in the list.
+   * [String], [connect] will perform a [InternetAddress.lookup] and try
+   * all returned [InternetAddress]es, until connected. Unless a
+   * connection was established, the error from the first failing connection is
+   * returned.
+   *
+   * The argument [sourceAddress] can be used to specify the local
+   * address to bind when making the connection. `sourceAddress` can either
+   * be a `String` or an `InternetAddress`. If a `String` is passed it must
+   * hold a numeric IP address.
    */
-  external static Future<Socket> connect(host, int port);
+  external static Future<Socket> connect(host, int port, {sourceAddress});
 
   /**
    * Destroy the socket in both directions. Calling [destroy] will make the
@@ -510,6 +568,10 @@ abstract class Socket implements Stream<List<int>>, IOSink {
    * Returns the remote [InternetAddress] connected to by this socket.
    */
   InternetAddress get remoteAddress;
+
+  Future<Socket> close();
+
+  Future<Socket> get done;
 }
 
 
@@ -622,6 +684,8 @@ abstract class RawDatagramSocket extends Stream<RawSocketEvent> {
   /**
    * Receive a datagram. If there are no datagrams available `null` is
    * returned.
+   *
+   * The maximum length of the datagram that can be received is 65503 bytes.
    */
   Datagram receive();
 
@@ -650,6 +714,11 @@ class SocketException implements IOException {
   final int port;
 
   const SocketException(this.message, {this.osError, this.address, this.port});
+  const SocketException.closed()
+      : message = 'Socket has been closed',
+        osError = null,
+        address = null,
+        port = null;
 
   String toString() {
     StringBuffer sb = new StringBuffer();

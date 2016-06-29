@@ -8,58 +8,89 @@ part of dart.async;
 // Core Stream types
 // -------------------------------------------------------------------
 
+typedef void _TimerCallback();
+
 /**
  * A source of asynchronous data events.
  *
- * A Stream provides a sequence of events. Each event is either a data event or
- * an error event, representing the result of a single computation. When the
- * Stream is exhausted, it may send a single "done" event.
+ * A Stream provides a way to receive a sequence of events.
+ * Each event is either a data event or an error event,
+ * representing the result of a single computation.
+ * When the events provided by a Stream have all been sent,
+ * a single "done" event will mark the end.
  *
- * You can [listen] on a stream to receive the events it sends. When you listen,
- * you receive a [StreamSubscription] object that can be used to stop listening,
- * or to temporarily pause events from the stream.
+ * You can [listen] on a stream to make it start generating events,
+ * and to set up listeners that receive the events.
+ * When you listen, you receive a [StreamSubscription] object
+ * which is the active object providing the events,
+ * and which can be used to stop listening again,
+ * or to temporarily pause events from the subscription.
  *
- * When an event is fired, the listeners at that time are informed.
- * If a listener is added while an event is being fired, the change
- * will only take effect after the event is completely fired. If a listener
- * is canceled, it immediately stops receiving events.
- *
- * When the "done" event is fired, subscribers are unsubscribed before
- * receiving the event. After the event has been sent, the stream has no
- * subscribers. Adding new subscribers after this point is allowed, but
- * they will just receive a new "done" event as soon as possible.
- *
- * Streams always respect "pause" requests. If necessary they need to buffer
- * their input, but often, and preferably, they can simply request their input
- * to pause too.
- *
- * There are two kinds of streams: The normal "single-subscription" streams and
+ * There are two kinds of streams: "Single-subscription" streams and
  * "broadcast" streams.
  *
- * A single-subscription stream allows only a single listener during the whole
+ * *A single-subscription stream* allows only a single listener during the whole
  * lifetime of the stream.
- * It holds back events until it gets a listener, and it may exhaust
- * itself when the listener is unsubscribed, even if the stream wasn't done.
+ * It doesn't start generating events until it has a listener,
+ * and it stops sending events when the listener is unsubscribed,
+ * even if the source of events could still provide more.
  *
- * Single-subscription streams are generally used for streaming parts of
- * contiguous data like file I/O.
+ * Listening twice on a single-subscription stream is not allowed, even after
+ * the first subscription has been canceled.
  *
- * A broadcast stream allows any number of listeners, and it fires
+ * Single-subscription streams are generally used for streaming chunks of
+ * larger contiguous data like file I/O.
+ *
+ * *A broadcast stream* allows any number of listeners, and it fires
  * its events when they are ready, whether there are listeners or not.
  *
  * Broadcast streams are used for independent events/observers.
  *
- * Stream transformations, such as [where] and [skip], always return
- * non-broadcast streams. If several listeners want to listen to the returned
- * stream, use [asBroadcastStream] to create a broadcast stream on top of the
+ * If several listeners want to listen to a single subscription stream,
+ * use [asBroadcastStream] to create a broadcast stream on top of the
  * non-broadcast stream.
+ *
+ * On either kind of stream, stream transformations, such as [where] and
+ * [skip], return the same type of stream as the one the method was called on,
+ * unless otherwise noted.
+ *
+ * When an event is fired, the listener(s) at that time will receive the event.
+ * If a listener is added to a broadcast stream while an event is being fired,
+ * that listener will not receive the event currently being fired.
+ * If a listener is canceled, it immediately stops receiving events.
+ *
+ * When the "done" event is fired, subscribers are unsubscribed before
+ * receiving the event. After the event has been sent, the stream has no
+ * subscribers. Adding new subscribers to a broadcast stream after this point
+ * is allowed, but they will just receive a new "done" event as soon
+ * as possible.
+ *
+ * Stream subscriptions always respect "pause" requests. If necessary they need
+ * to buffer their input, but often, and preferably, they can simply request
+ * their input to pause too.
  *
  * The default implementation of [isBroadcast] returns false.
  * A broadcast stream inheriting from [Stream] must override [isBroadcast]
- * to return [:true:].
+ * to return `true`.
  */
 abstract class Stream<T> {
   Stream();
+
+  /**
+   * Internal use only. We do not want to promise that Stream stays const.
+   *
+   * If mixins become compatible with const constructors, we may use a
+   * stream mixin instead of extending Stream from a const class.
+   */
+  const Stream._internal();
+
+  /**
+   * Creates an empty broadcast stream.
+   *
+   * This is a stream which does nothing except sending a done event
+   * when it's listened to.
+   */
+  const factory Stream.empty() = _EmptyStream<T>;
 
   /**
    * Creates a new single-subscription stream from the future.
@@ -68,20 +99,67 @@ abstract class Stream<T> {
    * data or error, and then close with a done-event.
    */
   factory Stream.fromFuture(Future<T> future) {
-    StreamController<T> controller = new StreamController<T>(sync: true);
+    // Use the controller's buffering to fill in the value even before
+    // the stream has a listener. For a single value, it's not worth it
+    // to wait for a listener before doing the `then` on the future.
+    _StreamController<T> controller = new StreamController<T>(sync: true);
     future.then((value) {
-        controller.add(value);
-        controller.close();
+        controller._add(value);
+        controller._closeUnchecked();
       },
       onError: (error, stackTrace) {
-        controller.addError(error, stackTrace);
-        controller.close();
+        controller._addError(error, stackTrace);
+        controller._closeUnchecked();
       });
     return controller.stream;
   }
 
   /**
+   * Create a stream from a group of futures.
+   *
+   * The stream reports the results of the futures on the stream in the order
+   * in which the futures complete.
+   *
+   * If some futures have completed before calling `Stream.fromFutures`,
+   * their result will be output on the created stream in some unspecified
+   * order.
+   *
+   * When all futures have completed, the stream is closed.
+   *
+   * If no future is passed, the stream closes as soon as possible.
+   */
+  factory Stream.fromFutures(Iterable<Future<T>> futures) {
+    _StreamController<T> controller = new StreamController<T>(sync: true);
+    int count = 0;
+    var onValue = (T value) {
+      if (!controller.isClosed) {
+        controller._add(value);
+        if (--count == 0) controller._closeUnchecked();
+      }
+    };
+    var onError = (error, stack) {
+      if (!controller.isClosed) {
+        controller._addError(error, stack);
+        if (--count == 0) controller._closeUnchecked();
+      }
+    };
+    // The futures are already running, so start listening to them immediately
+    // (instead of waiting for the stream to be listened on).
+    // If we wait, we might not catch errors in the futures in time.
+    for (var future in futures) {
+      count++;
+      future.then(onValue, onError: onError);
+    }
+    // Use schedule microtask since controller is sync.
+    if (count == 0) scheduleMicrotask(controller.close);
+    return controller.stream;
+  }
+
+  /**
    * Creates a single-subscription stream that gets its data from [data].
+   *
+   * The iterable is iterated when the stream receives a listener, and stops
+   * iterating if the listener cancels the subscription.
    *
    * If iterating [data] throws an error, the stream ends immediately with
    * that error. No done event will be sent (iteration is not complete), but no
@@ -104,8 +182,6 @@ abstract class Stream<T> {
    */
   factory Stream.periodic(Duration period,
                           [T computation(int computationCount)]) {
-    if (computation == null) computation = ((i) => null);
-
     Timer timer;
     int computationCount = 0;
     StreamController<T> controller;
@@ -114,7 +190,15 @@ abstract class Stream<T> {
 
     void sendEvent() {
       watch.reset();
-      T data = computation(computationCount++);
+      T data;
+      if (computation != null) {
+        try {
+          data = computation(computationCount++);
+        } catch (e, s) {
+          controller.addError(e, s);
+          return;
+        }
+      }
       controller.add(data);
     }
 
@@ -177,18 +261,20 @@ abstract class Stream<T> {
    *         _outputSink.add(data);
    *       }
    *
-   *       void addError(e, [st]) => _outputSink(e, st);
-   *       void close() => _outputSink.close();
+   *       void addError(e, [st]) { _outputSink.addError(e, st); }
+   *       void close() { _outputSink.close(); }
    *     }
    *
    *     class DuplicationTransformer implements StreamTransformer<String, String> {
    *       // Some generic types ommitted for brevety.
-   *       Stream bind(Stream stream) => new Stream<String>.eventTransform(
+   *       Stream bind(Stream stream) => new Stream<String>.eventTransformed(
    *           stream,
    *           (EventSink sink) => new DuplicationSink(sink));
    *     }
    *
    *     stringStream.transform(new DuplicationTransformer());
+   *
+   * The resulting stream is a broadcast stream if [source] is.
    */
   factory Stream.eventTransformed(Stream source,
                                   EventSink mapSink(EventSink<T> sink)) {
@@ -203,10 +289,7 @@ abstract class Stream<T> {
   /**
    * Returns a multi-subscription stream that produces the same events as this.
    *
-   * If this stream is already a broadcast stream, it is returned unmodified.
-   *
-   * If this stream is single-subscription, return a new stream that allows
-   * multiple subscribers. It will subscribe to this stream when its first
+   * The returned stream will subscribe to this stream when its first
    * subscriber is added, and will stay subscribed until this stream ends,
    * or a callback cancels the subscription.
    *
@@ -227,7 +310,6 @@ abstract class Stream<T> {
   Stream<T> asBroadcastStream({
       void onListen(StreamSubscription<T> subscription),
       void onCancel(StreamSubscription<T> subscription) }) {
-    if (isBroadcast) return this;
     return new _AsBroadcastStream<T>(this, onListen, onCancel);
   }
 
@@ -245,6 +327,10 @@ abstract class Stream<T> {
    * two arguments it is called with the stack trace (which could be `null` if
    * the stream itself received an error without stack trace).
    * Otherwise it is called with just the error object.
+   * If [onError] is omitted, any errors on the stream are considered unhandled,
+   * and will be passed to the current [Zone]'s error handler.
+   * By default unhandled async errors are treated
+   * as if they were uncaught top-level errors.
    *
    * If this stream closes, the [onDone] handler is called.
    *
@@ -262,7 +348,9 @@ abstract class Stream<T> {
    * The new stream sends the same error and done events as this stream,
    * but it only sends the data events that satisfy the [test].
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will individually perform the `test`.
    */
   Stream<T> where(bool test(T event)) {
     return new _WhereStream<T>(this, test);
@@ -272,10 +360,139 @@ abstract class Stream<T> {
    * Creates a new stream that converts each element of this stream
    * to a new value using the [convert] function.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * For each data event, `o`, in this stream, the returned stream
+   * provides a data event with the value `convert(o)`.
+   * If [convert] throws, the returned stream reports the exception as an error
+   * event instead.
+   *
+   * Error and done events are passed through unchanged to the returned stream.
+   *
+   * The returned stream is a broadcast stream if this stream is.
+   * The [convert] function is called once per data event per listener.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will individually call [convert] on each data event.
    */
-  Stream map(convert(T event)) {
-    return new _MapStream<T, dynamic>(this, convert);
+  Stream/*<S>*/ map/*<S>*/(/*=S*/ convert(T event)) {
+    return new _MapStream<T, dynamic/*=S*/>(this, convert);
+  }
+
+  /**
+   * Creates a new stream with each data event of this stream asynchronously
+   * mapped to a new event.
+   *
+   * This acts like [map], except that [convert] may return a [Future],
+   * and in that case, the stream waits for that future to complete before
+   * continuing with its result.
+   *
+   * The returned stream is a broadcast stream if this stream is.
+   */
+  Stream/*<E>*/ asyncMap/*<E>*/(convert(T event)) {
+    StreamController/*<E>*/ controller;
+    StreamSubscription/*<T>*/ subscription;
+
+    void onListen() {
+      final add = controller.add;
+      assert(controller is _StreamController ||
+             controller is _BroadcastStreamController);
+      final _EventSink/*<E>*/ eventSink =
+          controller as Object /*=_EventSink<E>*/;
+      final addError = eventSink._addError;
+      subscription = this.listen(
+          (T event) {
+            dynamic newValue;
+            try {
+              newValue = convert(event);
+            } catch (e, s) {
+              controller.addError(e, s);
+              return;
+            }
+            if (newValue is Future) {
+              subscription.pause();
+              newValue.then(add, onError: addError)
+                      .whenComplete(subscription.resume);
+            } else {
+              controller.add(newValue as Object/*=E*/);
+            }
+          },
+          onError: addError,
+          onDone: controller.close
+      );
+    }
+
+    if (this.isBroadcast) {
+      controller = new StreamController/*<E>*/.broadcast(
+        onListen: onListen,
+        onCancel: () { subscription.cancel(); },
+        sync: true
+      );
+    } else {
+      controller = new StreamController/*<E>*/(
+        onListen: onListen,
+        onPause: () { subscription.pause(); },
+        onResume: () { subscription.resume(); },
+        onCancel: () { subscription.cancel(); },
+        sync: true
+      );
+    }
+    return controller.stream;
+  }
+
+  /**
+   * Creates a new stream with the events of a stream per original event.
+   *
+   * This acts like [expand], except that [convert] returns a [Stream]
+   * instead of an [Iterable].
+   * The events of the returned stream becomes the events of the returned
+   * stream, in the order they are produced.
+   *
+   * If [convert] returns `null`, no value is put on the output stream,
+   * just as if it returned an empty stream.
+   *
+   * The returned stream is a broadcast stream if this stream is.
+   */
+  Stream/*<E>*/ asyncExpand/*<E>*/(Stream/*<E>*/ convert(T event)) {
+    StreamController/*<E>*/ controller;
+    StreamSubscription<T> subscription;
+    void onListen() {
+      assert(controller is _StreamController ||
+             controller is _BroadcastStreamController);
+      final _EventSink/*<E>*/ eventSink =
+          controller as Object /*=_EventSink<E>*/;
+      subscription = this.listen(
+          (T event) {
+            Stream/*<E>*/ newStream;
+            try {
+              newStream = convert(event);
+            } catch (e, s) {
+              controller.addError(e, s);
+              return;
+            }
+            if (newStream != null) {
+              subscription.pause();
+              controller.addStream(newStream)
+                        .whenComplete(subscription.resume);
+            }
+          },
+          onError: eventSink._addError,  // Avoid Zone error replacement.
+          onDone: controller.close
+      );
+    }
+    if (this.isBroadcast) {
+      controller = new StreamController/*<E>*/.broadcast(
+        onListen: onListen,
+        onCancel: () { subscription.cancel(); },
+        sync: true
+      );
+    } else {
+      controller = new StreamController/*<E>*/(
+        onListen: onListen,
+        onPause: () { subscription.pause(); },
+        onResume: () { subscription.resume(); },
+        onCancel: () { subscription.cancel(); },
+        sync: true
+      );
+    }
+    return controller.stream;
   }
 
   /**
@@ -286,7 +503,7 @@ abstract class Stream<T> {
    *
    * The [onError] callback must be of type `void onError(error)` or
    * `void onError(error, StackTrace stackTrace)`. Depending on the function
-   * type the the stream either invokes [onError] with or without a stack
+   * type the stream either invokes [onError] with or without a stack
    * trace. The stack trace argument might be `null` if the stream itself
    * received an error without stack trace.
    *
@@ -299,9 +516,11 @@ abstract class Stream<T> {
    *
    * If you need to transform an error into a data event, use the more generic
    * [Stream.transform] to handle the event by writing a data event to
-   * the output sink
+   * the output sink.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will individually perform the `test` and handle the error.
    */
   Stream<T> handleError(Function onError, { bool test(error) }) {
     return new _HandleErrorStream<T>(this, onError, test);
@@ -315,14 +534,31 @@ abstract class Stream<T> {
    * and each of these new events are then sent by the returned stream
    * in order.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will individually call `convert` and expand the events.
    */
-  Stream expand(Iterable convert(T value)) {
-    return new _ExpandStream<T, dynamic>(this, convert);
+  Stream/*<S>*/ expand/*<S>*/(Iterable/*<S>*/ convert(T value)) {
+    return new _ExpandStream<T, dynamic/*=S*/>(this, convert);
   }
 
   /**
-   * Binds this stream as the input of the provided [StreamConsumer].
+   * Pipe the events of this stream into [streamConsumer].
+   *
+   * The events of this stream are added to `streamConsumer` using
+   * [StreamConsumer.addStream].
+   * The `streamConsumer` is closed when this stream has been successfully added
+   * to it - when the future returned by `addStream` completes without an error.
+   *
+   * Returns a future which completes when the stream has been consumed
+   * and the consumer has been closed.
+   *
+   * The returned future completes with the same result as the future returned
+   * by [StreamConsumer.close].
+   * If the adding of the stream itself fails in some way,
+   * then the consumer is expected to be closed, and won't be closed again.
+   * In that case the returned future completes with the error from calling
+   * `addStream`.
    */
   Future pipe(StreamConsumer<T> streamConsumer) {
     return streamConsumer.addStream(this).then((_) => streamConsumer.close());
@@ -332,8 +568,12 @@ abstract class Stream<T> {
    * Chains this stream as the input of the provided [StreamTransformer].
    *
    * Returns the result of [:streamTransformer.bind:] itself.
+   *
+   * The `streamTransformer` can decide whether it wants to return a
+   * broadcast stream or not.
    */
-  Stream transform(StreamTransformer<T, dynamic> streamTransformer) {
+  Stream/*<S>*/ transform/*<S>*/(
+      StreamTransformer<T, dynamic/*=S*/ > streamTransformer) {
     return streamTransformer.bind(this);
   }
 
@@ -359,7 +599,11 @@ abstract class Stream<T> {
       onError: result._completeError,
       onDone: () {
         if (!seenFirst) {
-          result._completeError(new StateError("No elements"));
+          try {
+            throw IterableElementError.noElement();
+          } catch (e, s) {
+            _completeWithErrorCallback(result, e,  s);
+          }
         } else {
           result._complete(value);
         }
@@ -370,15 +614,17 @@ abstract class Stream<T> {
   }
 
   /** Reduces a sequence of values by repeatedly applying [combine]. */
-  Future fold(var initialValue, combine(var previous, T element)) {
-    _Future result = new _Future();
-    var value = initialValue;
+  Future/*<S>*/ fold/*<S>*/(var/*=S*/ initialValue,
+      /*=S*/ combine(var/*=S*/ previous, T element)) {
+
+    _Future/*<S>*/ result = new _Future/*<S>*/();
+    var/*=S*/ value = initialValue;
     StreamSubscription subscription;
     subscription = this.listen(
       (T element) {
         _runUserCode(
           () => combine(value, element),
-          (newValue) { value = newValue; },
+          (/*=S*/ newValue) { value = newValue; },
           _cancelAndErrorClosure(subscription, result)
         );
       },
@@ -416,7 +662,7 @@ abstract class Stream<T> {
         try {
           buffer.write(element);
         } catch (e, s) {
-          _cancelAndError(subscription, result, e, s);
+          _cancelAndErrorWithReplacement(subscription, result, e, s);
         }
       },
       onError: (e) {
@@ -605,7 +851,15 @@ abstract class Stream<T> {
     return future;
   }
 
-  /** Collects the data of this stream in a [Set]. */
+  /**
+   * Collects the data of this stream in a [Set].
+   *
+   * The returned set is the same type as returned by `new Set<T>()`.
+   * If another type of set is needed, either use [forEach] to add each
+   * element to the set, or use
+   * `toList().then((list) => new SomeOtherSet.from(list))`
+   * to create the set.
+   */
   Future<Set<T>> toSet() {
     Set<T> result = new Set<T>();
     _Future<Set<T>> future = new _Future<Set<T>>();
@@ -632,8 +886,8 @@ abstract class Stream<T> {
    * In case of a `done` event the future completes with the given
    * [futureValue].
    */
-  Future drain([var futureValue]) => listen(null, cancelOnError: true)
-      .asFuture(futureValue);
+  Future/*<E>*/ drain/*<E>*/([/*=E*/ futureValue])
+      => listen(null, cancelOnError: true).asFuture/*<E>*/(futureValue);
 
   /**
    * Provides at most the first [n] values of this stream.
@@ -651,10 +905,12 @@ abstract class Stream<T> {
    * means that single-subscription (non-broadcast) streams are closed and
    * cannot be reused after a call to this method.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * For a broadcast stream, the events are only counted from the time
+   * the returned stream is listened to.
    */
   Stream<T> take(int count) {
-    return new _TakeStream(this, count);
+    return new _TakeStream<T>(this, count);
   }
 
   /**
@@ -671,19 +927,23 @@ abstract class Stream<T> {
    * means that single-subscription (non-broadcast) streams are closed and
    * cannot be reused after a call to this method.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * For a broadcast stream, the events are only tested from the time
+   * the returned stream is listened to.
    */
   Stream<T> takeWhile(bool test(T element)) {
-    return new _TakeWhileStream(this, test);
+    return new _TakeWhileStream<T>(this, test);
   }
 
   /**
    * Skips the first [count] data events from this stream.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * For a broadcast stream, the events are only counted from the time
+   * the returned stream is listened to.
    */
   Stream<T> skip(int count) {
-    return new _SkipStream(this, count);
+    return new _SkipStream<T>(this, count);
   }
 
   /**
@@ -694,25 +954,29 @@ abstract class Stream<T> {
    * Starting with the first data event where [test] returns false for the
    * event data, the returned stream will have the same events as this stream.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * For a broadcast stream, the events are only tested from the time
+   * the returned stream is listened to.
    */
   Stream<T> skipWhile(bool test(T element)) {
-    return new _SkipWhileStream(this, test);
+    return new _SkipWhileStream<T>(this, test);
   }
 
   /**
    * Skips data events if they are equal to the previous data event.
    *
    * The returned stream provides the same events as this stream, except
-   * that it never provides two consequtive data events that are equal.
+   * that it never provides two consecutive data events that are equal.
    *
    * Equality is determined by the provided [equals] method. If that is
    * omitted, the '==' operator on the last provided data element is used.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will individually perform the `equals` test.
    */
   Stream<T> distinct([bool equals(T previous, T next)]) {
-    return new _DistinctStream(this, equals);
+    return new _DistinctStream<T>(this, equals);
   }
 
   /**
@@ -742,7 +1006,11 @@ abstract class Stream<T> {
       },
       onError: future._completeError,
       onDone: () {
-        future._completeError(new StateError("No elements"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -761,8 +1029,7 @@ abstract class Stream<T> {
     _Future<T> future = new _Future<T>();
     T result = null;
     bool foundResult = false;
-    StreamSubscription subscription;
-    subscription = this.listen(
+    listen(
       (T value) {
         foundResult = true;
         result = value;
@@ -773,7 +1040,11 @@ abstract class Stream<T> {
           future._complete(result);
           return;
         }
-        future._completeError(new StateError("No elements"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -796,8 +1067,11 @@ abstract class Stream<T> {
       (T value) {
         if (foundResult) {
           // This is the second element we get.
-          Error error = new StateError("More than one element");
-          _cancelAndError(subscription, future, error, null);
+          try {
+            throw IterableElementError.tooMany();
+          } catch (e, s) {
+            _cancelAndErrorWithReplacement(subscription, future, e, s);
+          }
           return;
         }
         foundResult = true;
@@ -809,7 +1083,11 @@ abstract class Stream<T> {
           future._complete(result);
           return;
         }
-        future._completeError(new StateError("No elements"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -857,7 +1135,11 @@ abstract class Stream<T> {
           _runUserCode(defaultValue, future._complete, future._completeError);
           return;
         }
-        future._completeError(new StateError("firstMatch ended without match"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -898,7 +1180,11 @@ abstract class Stream<T> {
           _runUserCode(defaultValue, future._complete, future._completeError);
           return;
         }
-        future._completeError(new StateError("lastMatch ended without match"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -922,11 +1208,11 @@ abstract class Stream<T> {
           (bool isMatch) {
             if (isMatch) {
               if (foundResult) {
-                _cancelAndError(
-                    subscription,
-                    future,
-                    new StateError('Multiple matches for "single"'),
-                    null);
+                try {
+                  throw IterableElementError.tooMany();
+                } catch (e, s) {
+                  _cancelAndErrorWithReplacement(subscription, future, e, s);
+                }
                 return;
               }
               foundResult = true;
@@ -942,7 +1228,11 @@ abstract class Stream<T> {
           future._complete(result);
           return;
         }
-        future._completeError(new StateError("single ended without match"));
+        try {
+          throw IterableElementError.noElement();
+        } catch (e, s) {
+          _completeWithErrorCallback(future, e, s);
+        }
       },
       cancelOnError: true);
     return future;
@@ -968,17 +1258,19 @@ abstract class Stream<T> {
     if (index is! int || index < 0) throw new ArgumentError(index);
     _Future<T> future = new _Future<T>();
     StreamSubscription subscription;
+    int elementIndex = 0;
     subscription = this.listen(
       (T value) {
-        if (index == 0) {
+        if (index == elementIndex) {
           _cancelAndValue(subscription, future, value);
           return;
         }
-        index -= 1;
+        elementIndex += 1;
       },
       onError: future._completeError,
       onDone: () {
-        future._completeError(new RangeError.value(index));
+        future._completeError(
+            new RangeError.index(index, this, "index", null, elementIndex));
       },
       cancelOnError: true);
     return future;
@@ -1001,15 +1293,18 @@ abstract class Stream<T> {
    * If `onTimeout` is omitted, a timeout will just put a [TimeoutException]
    * into the error channel of the returned stream.
    *
-   * The returned stream is not a broadcast stream, even if this stream is.
+   * The returned stream is a broadcast stream if this stream is.
+   * If a broadcast stream is listened to more than once, each subscription
+   * will have its individually timer that starts counting on listen,
+   * and the subscriptions' timers can be paused individually.
    */
-  Stream timeout(Duration timeLimit, {void onTimeout(EventSink sink)}) {
-    StreamSubscription<T> subscription;
-    _StreamController controller;
+  Stream<T> timeout(Duration timeLimit, {void onTimeout(EventSink<T> sink)}) {
+    StreamController<T> controller;
     // The following variables are set on listen.
+    StreamSubscription<T> subscription;
     Timer timer;
     Zone zone;
-    Function timeout;
+    _TimerCallback timeout;
 
     void onData(T event) {
       timer.cancel();
@@ -1018,97 +1313,142 @@ abstract class Stream<T> {
     }
     void onError(error, StackTrace stackTrace) {
       timer.cancel();
-      controller.addError(error, stackTrace);
+      assert(controller is _StreamController ||
+             controller is _BroadcastStreamController);
+      dynamic eventSink = controller;
+      eventSink._addError(error, stackTrace);  // Avoid Zone error replacement.
       timer = zone.createTimer(timeLimit, timeout);
     }
     void onDone() {
       timer.cancel();
       controller.close();
     }
-    controller = new _SyncStreamController(
-        () {
-          // This is the onListen callback for of controller.
-          // It runs in the same zone that the subscription was created in.
-          // Use that zone for creating timers and running the onTimeout
-          // callback.
-          zone = Zone.current;
-          if (onTimeout == null) {
-            timeout = () {
-              controller.addError(new TimeoutException("No stream event",
-                                                       timeLimit));
-            };
-          } else {
-            onTimeout = zone.registerUnaryCallback(onTimeout);
-            _ControllerEventSinkWrapper wrapper =
-                new _ControllerEventSinkWrapper(null);
-            timeout = () {
-              wrapper._sink = controller;  // Only valid during call.
-              zone.runUnaryGuarded(onTimeout, wrapper);
-              wrapper._sink = null;
-            };
-          }
+    void onListen() {
+      // This is the onListen callback for of controller.
+      // It runs in the same zone that the subscription was created in.
+      // Use that zone for creating timers and running the onTimeout
+      // callback.
+      zone = Zone.current;
+      if (onTimeout == null) {
+        timeout = () {
+          controller.addError(new TimeoutException("No stream event",
+                                                   timeLimit), null);
+        };
+      } else {
+        // TODO(floitsch): the return type should be 'void', and the type
+        // should be inferred.
+        var registeredOnTimeout =
+            zone.registerUnaryCallback/*<dynamic, EventSink<T>>*/(onTimeout);
+        _ControllerEventSinkWrapper wrapper =
+            new _ControllerEventSinkWrapper(null);
+        timeout = () {
+          wrapper._sink = controller;  // Only valid during call.
+          zone.runUnaryGuarded(registeredOnTimeout, wrapper);
+          wrapper._sink = null;
+        };
+      }
 
-          subscription = this.listen(onData, onError: onError, onDone: onDone);
-          timer = zone.createTimer(timeLimit, timeout);
-        },
-        () {
-          timer.cancel();
-          subscription.pause();
-        },
-        () {
-          subscription.resume();
-          timer = zone.createTimer(timeLimit, timeout);
-        },
-        () {
-          timer.cancel();
-          Future result = subscription.cancel();
-          subscription = null;
-          return result;
-        });
+      subscription = this.listen(onData, onError: onError, onDone: onDone);
+      timer = zone.createTimer(timeLimit, timeout);
+    }
+    Future onCancel() {
+      timer.cancel();
+      Future result = subscription.cancel();
+      subscription = null;
+      return result;
+    }
+    controller = isBroadcast
+        ? new _SyncBroadcastStreamController<T>(onListen, onCancel)
+        : new _SyncStreamController<T>(
+              onListen,
+              () {
+                // Don't null the timer, onCancel may call cancel again.
+                timer.cancel();
+                subscription.pause();
+              },
+              () {
+                subscription.resume();
+                timer = zone.createTimer(timeLimit, timeout);
+              },
+              onCancel);
     return controller.stream;
   }
 }
 
 /**
- * A control object for the subscription on a [Stream].
+ * A subscription on events from a [Stream].
  *
- * When you subscribe on a [Stream] using [Stream.listen],
- * a [StreamSubscription] object is returned. This object
- * is used to later unsubscribe again, or to temporarily pause
- * the stream's events.
+ * When you listen on a [Stream] using [Stream.listen],
+ * a [StreamSubscription] object is returned.
+ *
+ * The subscription provides events to the listener,
+ * and holds the callbacks used to handle the events.
+ * The subscription can also be used to unsubscribe from the events,
+ * or to temporarily pause the events from the stream.
  */
 abstract class StreamSubscription<T> {
   /**
-   * Cancels this subscription. It will no longer receive events.
+   * Cancels this subscription.
    *
-   * If an event is currently firing, this unsubscription will only
-   * take effect after all subscribers have received the current event.
+   * After this call, the subscription no longer receives events.
    *
-   * Returns a future if the cancel-operation is not completed synchronously.
-   * Otherwise returns `null`.
+   * The stream may need to shut down the source of events and clean up after
+   * the subscription is canceled.
+   *
+   * Returns a future that is completed once the stream has finished
+   * its cleanup. May also return `null` if no cleanup was necessary.
+   *
+   * Typically, futures are returned when the stream needs to release resources.
+   * For example, a stream might need to close an open file (as an asynchronous
+   * operation). If the listener wants to delete the file after having
+   * canceled the subscription, it must wait for the cleanup future to complete.
+   *
+   * A returned future completes with a `null` value.
+   * If the cleanup throws, which it really shouldn't, the returned future
+   * completes with that error.
    */
   Future cancel();
 
-  /** Set or override the data event handler of this subscription. */
+  /**
+   * Set or override the data event handler of this subscription.
+   *
+   * This method overrides the handler that has been set at the invocation of
+   * [Stream.listen].
+   */
   void onData(void handleData(T data));
 
   /**
    * Set or override the error event handler of this subscription.
    *
    * This method overrides the handler that has been set at the invocation of
-   * [Stream.listen].
+   * [Stream.listen] or by calling [asFuture].
    */
   void onError(Function handleError);
 
-  /** Set or override the done event handler of this subscription. */
+  /**
+   * Set or override the done event handler of this subscription.
+   *
+   * This method overrides the handler that has been set at the invocation of
+   * [Stream.listen] or by calling [asFuture].
+   */
   void onDone(void handleDone());
 
   /**
    * Request that the stream pauses events until further notice.
    *
+   * While paused, the subscription will not fire any events.
+   * If it receives events from its source, they will be buffered until
+   * the subscription is resumed.
+   * The underlying source is usually informed about the pause,
+   * so it can stop generating events until the subscription is resumed.
+   *
+   * To avoid buffering events on a broadcast stream, it is better to
+   * cancel this subscription, and start to listen again when events
+   * are needed.
+   *
    * If [resumeSignal] is provided, the stream will undo the pause
    * when the future completes. If the future completes with an error,
-   * it will not be handled!
+   * the stream will resume, but the error will not be handled!
    *
    * A call to [resume] will also undo a pause.
    *
@@ -1142,33 +1482,36 @@ abstract class StreamSubscription<T> {
    * In case of a `done` event the future completes with the given
    * [futureValue].
    */
-  Future asFuture([var futureValue]);
+  Future/*<E>*/ asFuture/*<E>*/([var/*=E*/ futureValue]);
 }
 
 
 /**
  * An interface that abstracts creation or handling of [Stream] events.
  */
-abstract class EventSink<T> {
-  /** Create a data event */
+abstract class EventSink<T> implements Sink<T> {
+  /** Send a data event to a stream. */
   void add(T event);
-  /** Create an async error. */
+
+  /** Send an async error to a stream. */
   void addError(errorEvent, [StackTrace stackTrace]);
-  /** Request a stream to close. */
+
+  /** Close the sink. No further events can be added after closing. */
   void close();
 }
 
 
 /** [Stream] wrapper that only exposes the [Stream] interface. */
 class StreamView<T> extends Stream<T> {
-  Stream<T> _stream;
+  final Stream<T> _stream;
 
-  StreamView(this._stream);
+  const StreamView(Stream<T> stream) : _stream = stream, super._internal();
 
   bool get isBroadcast => _stream.isBroadcast;
 
-  Stream<T> asBroadcastStream({void onListen(StreamSubscription subscription),
-                               void onCancel(StreamSubscription subscription)})
+  Stream<T> asBroadcastStream(
+      {void onListen(StreamSubscription<T> subscription),
+       void onCancel(StreamSubscription<T> subscription)})
       => _stream.asBroadcastStream(onListen: onListen, onCancel: onCancel);
 
   StreamSubscription<T> listen(void onData(T value),
@@ -1182,11 +1525,19 @@ class StreamView<T> extends Stream<T> {
 
 
 /**
- * The target of a [Stream.pipe] call.
+ * Abstract interface for a "sink" accepting multiple entire streams.
  *
- * The [Stream.pipe] call will pass itself to this object, and then return
- * the resulting [Future]. The pipe should complete the future when it's
- * done.
+ * A consumer can accept a number of consecutive streams using [addStream],
+ * and when no further data need to be added, the [close] method tells the
+ * consumer to complete its work and shut down.
+ *
+ * This class is not just a [Sink<Stream>] because it is also combined with
+ * other [Sink] classes, like it's combined with [EventSink] in the
+ * [StreamSink] class.
+ *
+ * The [Stream.pipe] accepts a `StreamConsumer` and will pass the stream
+ * to the consumer's [addStream] method. When that completes, it will
+ * call [close] and then complete its own returned future.
  */
 abstract class StreamConsumer<S> {
   /**
@@ -1194,16 +1545,38 @@ abstract class StreamConsumer<S> {
    *
    * Listens on [stream] and does something for each event.
    *
-   * The consumer may stop listening after an error, or it may consume
-   * all the errors and only stop at a done event.
+   * Returns a future which is completed when the stream is done being added,
+   * and the consumer is ready to accept a new stream.
+   * No further calls to [addStream] or [close] should happen before the
+   * returned future has completed.
+   *
+   * The consumer may stop listening to the stream after an error,
+   * it may consume all the errors and only stop at a done event,
+   * or it may be canceled early if the receiver don't want any further events.
+   *
+   * If the consumer stops listening because of some error preventing it
+   * from continuing, it may report this error in the returned future,
+   * otherwise it will just complete the future with `null`.
    */
   Future addStream(Stream<S> stream);
 
+  /**
+   * Tells the consumer that no further streams will be added.
+   *
+   * This allows the consumer to complete any remaining work and release
+   * resources that are no longer needed
+   *
+   * Returns a future which is completed when the consumer has shut down.
+   * If cleaning up can fail, the error may be reported in the returned future,
+   * otherwise it completes with `null`.
+   */
   Future close();
 }
 
 
 /**
+ * A object that accepts stream events both synchronously and asynchronously.
+ *
  * A [StreamSink] unifies the asynchronous methods from [StreamConsumer] and
  * the synchronous methods from [EventSink].
  *
@@ -1220,19 +1593,41 @@ abstract class StreamConsumer<S> {
  *
  * When [close] is called, it will return the [done] [Future].
  */
-abstract class StreamSink<S> implements StreamConsumer<S>, EventSink<S> {
+abstract class StreamSink<S> implements EventSink<S>, StreamConsumer<S> {
   /**
-   * Close the [StreamSink]. It'll return the [done] Future.
+   * Tells the stream sink that no further streams will be added.
+   *
+   * This allows the stream sink to complete any remaining work and release
+   * resources that are no longer needed
+   *
+   * Returns a future which is completed when the stream sink has shut down.
+   * If cleaning up can fail, the error may be reported in the returned future,
+   * otherwise it completes with `null`.
+   *
+   * Returns the same future as [done].
+   *
+   * The stream sink may close before the [close] method is called, either due
+   * to an error or because it is itself provding events to someone who has
+   * stopped listening. In that case, the [done] future is completed first,
+   * and the `close` method will return the `done` future when called.
+   *
+   * Unifies [StreamConsumer.close] and [EventSink.close] which both mark their
+   * object as not expecting any further events.
    */
   Future close();
 
   /**
-   * The [done] Future completes with the same values as [close], except
-   * for the following case:
+   * Return a future which is completed when the [StreamSink] is finished.
    *
-   * * The synchronous methods of [EventSink] were called, resulting in an
-   *   error. If there is no active future (like from an addStream call), the
-   *   [done] future will complete with that error
+   * If the `StreamSink` fails with an error,
+   * perhaps in response to adding events using [add], [addError] or [close],
+   * the [done] future will complete with that error.
+   *
+   * Otherwise, the returned future will complete when either:
+   *
+   * * all events have been processed and the sink has been closed, or
+   * * the sink has otherwise been stopped from handling more events
+   *   (for example by cancelling a stream subscription).
    */
   Future get done;
 }
@@ -1247,7 +1642,6 @@ abstract class StreamSink<S> implements StreamConsumer<S>, EventSink<S> {
  * It is good practice to write transformers that can be used multiple times.
  */
 abstract class StreamTransformer<S, T> {
-
   /**
    * Creates a [StreamTransformer].
    *
@@ -1304,16 +1698,16 @@ abstract class StreamTransformer<S, T> {
    *                 onDone: controller.close,
    *                 cancelOnError: cancelOnError);
    *             },
-   *             onPause: subscription.pause,
-   *             onResume: subscription.resume,
-   *             onCancel: subscription.cancel,
+   *             onPause: () { subscription.pause(); },
+   *             onResume: () { subscription.resume(); },
+   *             onCancel: () { subscription.cancel(); },
    *             sync: true);
    *           return controller.stream.listen(null);
    *         });
    */
   const factory StreamTransformer(
       StreamSubscription<T> transformer(Stream<S> stream, bool cancelOnError))
-      = _StreamSubscriptionTransformer;
+      = _StreamSubscriptionTransformer<S, T>;
 
   /**
    * Creates a [StreamTransformer] that delegates events to the given functions.
@@ -1330,13 +1724,23 @@ abstract class StreamTransformer<S, T> {
       void handleData(S data, EventSink<T> sink),
       void handleError(Object error, StackTrace stackTrace, EventSink<T> sink),
       void handleDone(EventSink<T> sink)})
-          = _StreamHandlerTransformer;
+          = _StreamHandlerTransformer<S, T>;
 
+  /**
+   * Transform the incoming [stream]'s events.
+   *
+   * Creates a new stream.
+   * When this stream is listened to, it will start listening on [stream],
+   * and generate events on the new stream based on the events from [stream].
+   *
+   * Subscriptions on the returned stream should propagate pause state
+   * to the subscription on [stream].
+   */
   Stream<T> bind(Stream<S> stream);
 }
 
 /**
- * An [Iterable] like interface for the values of a [Stream].
+ * An [Iterator] like interface for the values of a [Stream].
  *
  * This wraps a [Stream] and a subscription on the stream. It listens
  * on the stream, and completes the future returned by [moveNext] when the
@@ -1353,19 +1757,30 @@ abstract class StreamIterator<T> {
   /**
    * Wait for the next stream value to be available.
    *
-   * It is not allowed to call this function again until the future has
-   * completed. If the returned future completes with anything except `true`,
-   * the iterator is done, and no new value will ever be available.
+   * Returns a future which will complete with either `true` or `false`.
+   * Completing with `true` means that another event has been received and
+   * can be read as [current].
+   * Completing with `false` means that the stream itearation is done and
+   * no further events will ever be available.
+   * The future may complete with an error, if the stream produces an error,
+   * which also ends iteration.
    *
-   * The future may complete with an error, if the stream produces an error.
+   * The function must not be called again until the future returned by a
+   * previous call is completed.
    */
   Future<bool> moveNext();
 
   /**
    * The current value of the stream.
    *
-   * Only valid when the future returned by [moveNext] completes with `true`
-   * as value, and only until the next call to [moveNext].
+   * Is `null` before the first call to [moveNext] and after a call to
+   * `moveNext` completes with a `false` result or an error.
+   *
+   * When a `moveNext` call completes with `true`, the `current` field holds
+   * the most recent event of the stream, and it stays like that until the next
+   * call to `moveNext`.
+   * Between a call to `moveNext` and when its returned future completes,
+   * the value is unspecified.
    */
   T get current;
 
@@ -1375,12 +1790,13 @@ abstract class StreamIterator<T> {
    * The stream iterator is automatically canceled if the [moveNext] future
    * completes with either `false` or an error.
    *
-   * If a [moveNext] call has been made, it will complete with `false` as value,
-   * as will all further calls to [moveNext].
-   *
    * If you need to stop listening for values before the stream iterator is
    * automatically closed, you must call [cancel] to ensure that the stream
    * is properly closed.
+   *
+   * If [moveNext] has been called when the iterator is cancelled,
+   * its returned future will complete with `false` as value,
+   * as will all further calls to [moveNext].
    *
    * Returns a future if the cancel-operation is not completed synchronously.
    * Otherwise returns `null`.

@@ -20,28 +20,25 @@ class _FileStream extends Stream<List<int>> {
   final Completer _closeCompleter = new Completer();
 
   // Has the stream been paused or unsubscribed?
-  bool _paused = false;
   bool _unsubscribed = false;
 
   // Is there a read currently in progress?
-  bool _readInProgress = false;
+  bool _readInProgress = true;
   bool _closed = false;
 
-  // Block read but not yet send because stream is paused.
-  List<int> _currentBlock;
+  bool _atEnd = false;
 
   _FileStream(this._path, this._position, this._end) {
-    _setupController();
+    if (_position == null) _position = 0;
   }
 
-  _FileStream.forStdin() : _position = 0 {
-    _setupController();
-  }
+  _FileStream.forStdin() : _position = 0;
 
   StreamSubscription<List<int>> listen(void onData(List<int> event),
                                        {Function onError,
                                         void onDone(),
                                         bool cancelOnError}) {
+    _setupController();
     return _controller.stream.listen(onData,
                                      onError: onError,
                                      onDone: onDone,
@@ -51,8 +48,7 @@ class _FileStream extends Stream<List<int>> {
   void _setupController() {
     _controller = new StreamController<List<int>>(sync: true,
         onListen: _start,
-        onPause: () => _paused = true,
-        onResume: _resume,
+        onResume: _readBlock,
         onCancel: () {
           _unsubscribed = true;
           return _closeFile();
@@ -64,24 +60,25 @@ class _FileStream extends Stream<List<int>> {
       return _closeCompleter.future;
     }
     _closed = true;
+
     void done() {
       _closeCompleter.complete();
       _controller.close();
     }
-    if (_openedFile != null) {
-      _openedFile.close()
-          .catchError(_controller.addError)
-          .whenComplete(done);
-      _openedFile = null;
-    } else {
-      done();
-    }
+
+    _openedFile.close()
+        .catchError(_controller.addError)
+        .whenComplete(done);
     return _closeCompleter.future;
   }
 
   void _readBlock() {
     // Don't start a new read if one is already in progress.
     if (_readInProgress) return;
+    if (_atEnd) {
+      _closeFile();
+      return;
+    }
     _readInProgress = true;
     int readBytes = _BLOCK_SIZE;
     if (_end != null) {
@@ -97,32 +94,28 @@ class _FileStream extends Stream<List<int>> {
       }
     }
     _openedFile.read(readBytes)
-      .whenComplete(() {
-        _readInProgress = false;
-      })
       .then((block) {
+        _readInProgress = false;
         if (_unsubscribed) {
           _closeFile();
           return;
         }
-        if (block.length == 0) {
-          if (!_unsubscribed) {
-            _closeFile();
-            _unsubscribed = true;
-          }
-          return;
-        }
         _position += block.length;
-        if (_paused) {
-          _currentBlock = block;
-        } else {
-          _controller.add(block);
+        if (block.length < readBytes ||
+            (_end != null && _position == _end)) {
+          _atEnd = true;
+        }
+        if (!_atEnd && !_controller.isPaused) {
           _readBlock();
         }
+        _controller.add(block);
+        if (_atEnd) {
+          _closeFile();
+        }
       })
-      .catchError((e) {
+      .catchError((e, s) {
         if (!_unsubscribed) {
-          _controller.addError(e);
+          _controller.addError(e, s);
           _closeFile();
           _unsubscribed = true;
         }
@@ -130,52 +123,54 @@ class _FileStream extends Stream<List<int>> {
   }
 
   void _start() {
-    if (_position == null) {
-      _position = 0;
-    } else if (_position < 0) {
+    if (_position < 0) {
       _controller.addError(new RangeError("Bad start position: $_position"));
       _controller.close();
+      _closeCompleter.complete();
       return;
     }
-    Future<RandomAccessFile> openFuture;
-    if (_path != null) {
-      openFuture = new File(_path).open(mode: FileMode.READ);
-    } else {
-      openFuture = new Future.value(_File._openStdioSync(0));
-    }
-    _readInProgress = true;
-    openFuture
-      .then((RandomAccessFile opened) {
-        _openedFile = opened;
-        if (_position > 0) {
-          return opened.setPosition(_position);
-        }
-      })
-      .whenComplete(() {
-        _readInProgress = false;
-      })
-      .then((_) => _readBlock())
-      .catchError((e) {
-        _controller.addError(e);
-        _closeFile();
-      });
-  }
 
-  void _resume() {
-    _paused = false;
-    if (_currentBlock != null) {
-      _controller.add(_currentBlock);
-      _currentBlock = null;
+    void onReady(RandomAccessFile file) {
+      _openedFile = file;
+      _readInProgress = false;
+      _readBlock();
     }
-    // Resume reading unless we are already done.
-    if (_openedFile != null) _readBlock();
+
+    void onOpenFile(RandomAccessFile file) {
+      if (_position > 0) {
+        file.setPosition(_position)
+            .then(onReady, onError: (e, s) {
+              _controller.addError(e, s);
+              _readInProgress = false;
+              _closeFile();
+            });
+      } else {
+        onReady(file);
+      }
+    }
+
+    void openFailed(error, stackTrace) {
+      _controller.addError(error, stackTrace);
+      _controller.close();
+      _closeCompleter.complete();
+    }
+
+    if (_path != null) {
+      new File(_path).open(mode: FileMode.READ)
+          .then(onOpenFile, onError: openFailed);
+    } else {
+      try {
+        onOpenFile(_File._openStdioSync(0));
+      } catch (e, s) {
+        openFailed(e, s);
+      }
+    }
   }
 }
 
 class _FileStreamConsumer extends StreamConsumer<List<int>> {
   File _file;
   Future<RandomAccessFile> _openFuture;
-  StreamSubscription _subscription;
 
   _FileStreamConsumer(File this._file, FileMode mode) {
     _openFuture = _file.open(mode: mode);
@@ -187,36 +182,38 @@ class _FileStreamConsumer extends StreamConsumer<List<int>> {
   }
 
   Future<File> addStream(Stream<List<int>> stream) {
-    Completer<File> completer = new Completer<File>();
+    Completer<File> completer = new Completer<File>.sync();
     _openFuture
       .then((openedFile) {
+        var _subscription;
+        void error(e, [StackTrace stackTrace]) {
+          _subscription.cancel();
+          openedFile.close();
+          completer.completeError(e, stackTrace);
+        }
         _subscription = stream.listen(
           (d) {
             _subscription.pause();
-            openedFile.writeFrom(d, 0, d.length)
-              .then((_) => _subscription.resume())
-              .catchError((e) {
-                openedFile.close();
-                completer.completeError(e);
-              });
+            try {
+              openedFile.writeFrom(d, 0, d.length)
+                .then((_) => _subscription.resume(),
+                      onError: error);
+            } catch (e, stackTrace) {
+              error(e, stackTrace);
+            }
           },
           onDone: () {
             completer.complete(_file);
           },
-          onError: (e, [StackTrace stackTrace]) {
-            openedFile.close();
-            completer.completeError(e, stackTrace);
-          },
+          onError: error,
           cancelOnError: true);
       })
-      .catchError((e) {
-        completer.completeError(e);
-      });
+      .catchError(completer.completeError);
     return completer.future;
   }
 
   Future<File> close() =>
-      _openFuture.then((openedFile) => openedFile.close());
+      _openFuture.then/*<File>*/((openedFile) => openedFile.close());
 }
 
 
@@ -233,7 +230,7 @@ class _File extends FileSystemEntity implements File {
   }
 
   Future<bool> exists() {
-    return _IOService.dispatch(_FILE_EXISTS, [path]).then((response) {
+    return _IOService._dispatch(_FILE_EXISTS, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "Cannot check existence", path);
       }
@@ -259,7 +256,7 @@ class _File extends FileSystemEntity implements File {
     var result = recursive ? parent.create(recursive: true)
                            : new Future.value(null);
     return result
-      .then((_) => _IOService.dispatch(_FILE_CREATE, [path]))
+      .then((_) => _IOService._dispatch(_FILE_CREATE, [path]))
       .then((response) {
         if (_isErrorResponse(response)) {
           throw _exceptionFromResponse(response, "Cannot create file", path);
@@ -286,7 +283,7 @@ class _File extends FileSystemEntity implements File {
     if (recursive) {
       return new Directory(path).delete(recursive: true).then((_) => this);
     }
-    return _IOService.dispatch(_FILE_DELETE, [path]).then((response) {
+    return _IOService._dispatch(_FILE_DELETE, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "Cannot delete file", path);
       }
@@ -307,7 +304,7 @@ class _File extends FileSystemEntity implements File {
   }
 
   Future<File> rename(String newPath) {
-    return _IOService.dispatch(_FILE_RENAME, [path, newPath]).then((response) {
+    return _IOService._dispatch(_FILE_RENAME, [path, newPath]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(
             response, "Cannot rename file to '$newPath'", path);
@@ -327,7 +324,7 @@ class _File extends FileSystemEntity implements File {
   }
 
   Future<File> copy(String newPath) {
-    return _IOService.dispatch(_FILE_COPY, [path, newPath]).then((response) {
+    return _IOService._dispatch(_FILE_COPY, [path, newPath]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(
             response, "Cannot copy file to '$newPath'", path);
@@ -347,26 +344,31 @@ class _File extends FileSystemEntity implements File {
   Future<RandomAccessFile> open({FileMode mode: FileMode.READ}) {
     if (mode != FileMode.READ &&
         mode != FileMode.WRITE &&
-        mode != FileMode.APPEND) {
-      return new Future.error(new ArgumentError());
+        mode != FileMode.APPEND &&
+        mode != FileMode.WRITE_ONLY &&
+        mode != FileMode.WRITE_ONLY_APPEND) {
+      return new Future.error(
+          new ArgumentError('Invalid file mode for this operation'));
     }
-    return _IOService.dispatch(_FILE_OPEN, [path, mode._mode]).then((response) {
-      if (_isErrorResponse(response)) {
-        throw _exceptionFromResponse(response, "Cannot open file", path);
-      }
-      return new _RandomAccessFile(response, path);
-    });
+    return _IOService._dispatch(_FILE_OPEN, [path, mode._mode])
+        .then((response) {
+          if (_isErrorResponse(response)) {
+            throw _exceptionFromResponse(response, "Cannot open file", path);
+          }
+          return new _RandomAccessFile(response, path);
+        });
   }
 
   Future<int> length() {
-    return _IOService.dispatch(_FILE_LENGTH_FROM_PATH, [path]).then((response) {
-      if (_isErrorResponse(response)) {
-        throw _exceptionFromResponse(response,
-                                     "Cannot retrieve length of file",
-                                     path);
-      }
-      return response;
-    });
+    return _IOService._dispatch(_FILE_LENGTH_FROM_PATH, [path])
+        .then((response) {
+          if (_isErrorResponse(response)) {
+            throw _exceptionFromResponse(response,
+                                         "Cannot retrieve length of file",
+                                         path);
+          }
+          return response;
+        });
   }
 
 
@@ -379,7 +381,7 @@ class _File extends FileSystemEntity implements File {
   }
 
   Future<DateTime> lastModified() {
-    return _IOService.dispatch(_FILE_LAST_MODIFIED, [path]).then((response) {
+    return _IOService._dispatch(_FILE_LAST_MODIFIED, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response,
                                      "Cannot retrieve modification time",
@@ -402,10 +404,10 @@ class _File extends FileSystemEntity implements File {
   RandomAccessFile openSync({FileMode mode: FileMode.READ}) {
     if (mode != FileMode.READ &&
         mode != FileMode.WRITE &&
-        mode != FileMode.APPEND) {
-      throw new FileSystemException("Unknown file mode. Use FileMode.READ, "
-                              "FileMode.WRITE or FileMode.APPEND.",
-                              path);
+        mode != FileMode.APPEND &&
+        mode != FileMode.WRITE_ONLY &&
+        mode != FileMode.WRITE_ONLY_APPEND) {
+      throw new ArgumentError('Invalid file mode for this operation');
     }
     var id = _open(path, mode._mode);
     throwIfError(id, "Cannot open file", path);
@@ -429,38 +431,64 @@ class _File extends FileSystemEntity implements File {
   IOSink openWrite({FileMode mode: FileMode.WRITE,
                     Encoding encoding: UTF8}) {
     if (mode != FileMode.WRITE &&
-        mode != FileMode.APPEND) {
-      throw new ArgumentError(
-          "Wrong FileMode. Use FileMode.WRITE or FileMode.APPEND");
+        mode != FileMode.APPEND &&
+        mode != FileMode.WRITE_ONLY &&
+        mode != FileMode.WRITE_ONLY_APPEND) {
+      throw new ArgumentError('Invalid file mode for this operation');
     }
     var consumer = new _FileStreamConsumer(this, mode);
     return new IOSink(consumer, encoding: encoding);
   }
 
   Future<List<int>> readAsBytes() {
-    Completer<List<int>> completer = new Completer<List<int>>();
-    var builder = new BytesBuilder();
-    openRead().listen(
-      (d) => builder.add(d),
-      onDone: () {
-        completer.complete(builder.takeBytes());
-      },
-      onError: (e, StackTrace stackTrace) {
-        completer.completeError(e, stackTrace);
-      },
-      cancelOnError: true);
-    return completer.future;
+    Future<List<int>> readDataChunked(RandomAccessFile file) {
+      var builder = new BytesBuilder(copy: false);
+      var completer = new Completer<List<int>>();
+      void read() {
+        file.read(_BLOCK_SIZE).then((data) {
+          if (data.length > 0) {
+            builder.add(data);
+            read();
+          } else {
+            completer.complete(builder.takeBytes());
+          }
+        }, onError: completer.completeError);
+      }
+      read();
+      return completer.future;
+    }
+
+    return open().then((file) {
+      return file.length().then((length) {
+        if (length == 0) {
+          // May be character device, try to read it in chunks.
+          return readDataChunked(file);
+        }
+        return file.read(length);
+      }).whenComplete(file.close);
+    });
   }
 
   List<int> readAsBytesSync() {
     var opened = openSync();
-    var builder = new BytesBuilder();
-    var data;
-    while ((data = opened.readSync(_BLOCK_SIZE)).length > 0) {
-      builder.add(data);
+    try {
+      List<int> data;
+      var length = opened.lengthSync();
+      if (length == 0) {
+        // May be character device, try to read it in chunks.
+        var builder = new BytesBuilder(copy: false);
+        do {
+          data = opened.readSync(_BLOCK_SIZE);
+          if (data.length > 0) builder.add(data);
+        } while (data.length > 0);
+        data = builder.takeBytes();
+      } else {
+        data = opened.readSync(length);
+      }
+      return data;
+    } finally {
+      opened.closeSync();
     }
-    opened.closeSync();
-    return builder.takeBytes();
   }
 
   String _tryDecode(List<int> bytes, Encoding encoding) {
@@ -475,62 +503,38 @@ class _File extends FileSystemEntity implements File {
   Future<String> readAsString({Encoding encoding: UTF8}) =>
     readAsBytes().then((bytes) => _tryDecode(bytes, encoding));
 
-  String readAsStringSync({Encoding encoding: UTF8}) {
-    List<int> bytes = readAsBytesSync();
-    return _tryDecode(bytes, encoding);
-  }
+  String readAsStringSync({Encoding encoding: UTF8}) =>
+    _tryDecode(readAsBytesSync(), encoding);
 
-  List<String> _decodeLines(List<int> bytes, Encoding encoding) {
-    if (bytes.length == 0) return [];
-    var list = [];
-    var controller = new StreamController(sync: true);
-    var error = null;
-    controller.stream
-        .transform(encoding.decoder)
-        .transform(new LineSplitter())
-        .listen((line) => list.add(line), onError: (e) => error = e);
-    controller.add(bytes);
-    controller.close();
-    if (error != null) {
-      throw new FileSystemException(
-          "Failed to decode data using encoding '${encoding.name}'", path);
-    }
-    return list;
-  }
-
-  Future<List<String>> readAsLines({Encoding encoding: UTF8}) {
-    return readAsBytes().then((bytes) {
-      return _decodeLines(bytes, encoding);
-    });
-  }
+  Future<List<String>> readAsLines({Encoding encoding: UTF8}) =>
+    readAsString(encoding: encoding).then(const LineSplitter().convert);
 
   List<String> readAsLinesSync({Encoding encoding: UTF8}) =>
-      _decodeLines(readAsBytesSync(), encoding);
+    const LineSplitter().convert(readAsStringSync(encoding: encoding));
 
   Future<File> writeAsBytes(List<int> bytes,
                             {FileMode mode: FileMode.WRITE,
                              bool flush: false}) {
-    try {
-      IOSink sink = openWrite(mode: mode);
-      sink.add(bytes);
-      if (flush) {
-        sink.flush().then((_) => sink.close());
-      } else {
-        sink.close();
-      }
-      return sink.done.then((_) => this);
-    } catch (e) {
-      return new Future.error(e);
-    }
+    return open(mode: mode).then((file) {
+      return file.writeFrom(bytes, 0, bytes.length)
+          .then((_) {
+            if (flush) return file.flush().then((_) => this);
+            return this;
+          })
+          .whenComplete(file.close);
+    });
   }
 
   void writeAsBytesSync(List<int> bytes,
                         {FileMode mode: FileMode.WRITE,
                          bool flush: false}) {
     RandomAccessFile opened = openSync(mode: mode);
-    opened.writeFromSync(bytes, 0, bytes.length);
-    if (flush) opened.flushSync();
-    opened.closeSync();
+    try {
+      opened.writeFromSync(bytes, 0, bytes.length);
+      if (flush) opened.flushSync();
+    } finally {
+      opened.closeSync();
+    }
   }
 
   Future<File> writeAsString(String contents,
@@ -560,19 +564,66 @@ class _File extends FileSystemEntity implements File {
   }
 }
 
+abstract class _RandomAccessFileOps {
+  external factory _RandomAccessFileOps(int pointer);
+
+  int getPointer();
+  int close();
+  readByte();
+  read(int bytes);
+  readInto(List<int> buffer, int start, int end);
+  writeByte(int value);
+  writeFrom(List<int> buffer, int start, int end);
+  position();
+  setPosition(int position);
+  truncate(int length);
+  length();
+  flush();
+  lock(int lock, int start, int end);
+}
 
 class _RandomAccessFile implements RandomAccessFile {
+  static bool _connectedResourceHandler = false;
+
   final String path;
-  int _id;
+
   bool _asyncDispatched = false;
   SendPort _fileService;
 
-  _RandomAccessFile(this._id, this.path);
+  _FileResourceInfo _resourceInfo;
+  _RandomAccessFileOps _ops;
+
+  _RandomAccessFile(int pointer, this.path) {
+    _ops = new _RandomAccessFileOps(pointer);
+    _resourceInfo = new _FileResourceInfo(this);
+    _maybeConnectHandler();
+  }
+
+  void _maybePerformCleanup() {
+    if (closed) {
+      _FileResourceInfo.FileClosed(_resourceInfo);
+    }
+  }
+
+  _maybeConnectHandler() {
+    if (!_connectedResourceHandler) {
+      // TODO(ricow): We probably need to set these in some initialization code.
+      // We need to make sure that these are always available from the
+      // observatory even if no files (or sockets for the socket ones) are
+      // open.
+      registerExtension('ext.dart.io.getOpenFiles',
+                        _FileResourceInfo.getOpenFiles);
+      registerExtension('ext.dart.io.getFileByID',
+                        _FileResourceInfo.getFileInfoMapByID);
+      _connectedResourceHandler = true;
+    }
+  }
 
   Future<RandomAccessFile> close() {
-    return _dispatch(_FILE_CLOSE, [_id], markClosed: true).then((result) {
+    return _dispatch(_FILE_CLOSE, [null], markClosed: true).then((result) {
       if (result != -1) {
-        _id = result;
+        closed = closed || (result == 0);
+        _maybePerformCleanup();
         return this;
       } else {
         throw new FileSystemException("Cannot close file", path);
@@ -580,34 +631,33 @@ class _RandomAccessFile implements RandomAccessFile {
     });
   }
 
-  external static int _close(int id);
-
   void closeSync() {
     _checkAvailable();
-    var id = _close(_id);
+    var id = _ops.close();
     if (id == -1) {
       throw new FileSystemException("Cannot close file", path);
     }
-    _id = id;
+    closed = closed || (id == 0);
+    _maybePerformCleanup();
   }
 
   Future<int> readByte() {
-    return _dispatch(_FILE_READ_BYTE, [_id]).then((response) {
+    return _dispatch(_FILE_READ_BYTE, [null]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "readByte failed", path);
       }
+      _resourceInfo.addRead(1);
       return response;
     });
   }
 
-  external static _readByte(int id);
-
   int readByteSync() {
     _checkAvailable();
-    var result = _readByte(_id);
+    var result = _ops.readByte();
     if (result is OSError) {
       throw new FileSystemException("readByte failed", path, result);
     }
+    _resourceInfo.addRead(1);
     return result;
   }
 
@@ -615,73 +665,67 @@ class _RandomAccessFile implements RandomAccessFile {
     if (bytes is !int) {
       throw new ArgumentError(bytes);
     }
-    return _dispatch(_FILE_READ, [_id, bytes]).then((response) {
+    return _dispatch(_FILE_READ, [null, bytes]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "read failed", path);
       }
-      return response[1];
+      _resourceInfo.addRead(response[1].length);
+      return response[1] as Object/*=List<int>*/;
     });
   }
-
-  external static _read(int id, int bytes);
 
   List<int> readSync(int bytes) {
     _checkAvailable();
     if (bytes is !int) {
       throw new ArgumentError(bytes);
     }
-    var result = _read(_id, bytes);
+    var result = _ops.read(bytes);
     if (result is OSError) {
       throw new FileSystemException("readSync failed", path, result);
     }
-    return result;
+    _resourceInfo.addRead(result.length);
+    return result as Object/*=List<int>*/;
   }
 
-  Future<int> readInto(List<int> buffer, [int start, int end]) {
-    if (buffer is !List ||
-        (start != null && start is !int) ||
-        (end != null && end is !int)) {
+  Future<int> readInto(List<int> buffer, [int start = 0, int end]) {
+    if ((buffer is !List) ||
+        ((start != null) && (start is !int)) ||
+        ((end != null) && (end is !int))) {
       throw new ArgumentError();
     }
-    if (start == null) start = 0;
-    if (end == null) end = buffer.length;
+    end = RangeError.checkValidRange(start, end, buffer.length);
+    if (end == start) {
+      return new Future.value(0);
+    }
     int length = end - start;
-    return _dispatch(_FILE_READ_INTO, [_id, length]).then((response) {
+    return _dispatch(_FILE_READ_INTO, [null, length]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "readInto failed", path);
       }
       var read = response[1];
-      var data = response[2];
+      var data = response[2] as Object/*=List<int>*/;
       buffer.setRange(start, start + read, data);
+      _resourceInfo.addRead(read);
       return read;
     });
   }
 
-  static void _checkReadWriteListArguments(int length, int start, int end) {
-    if (start < 0) throw new RangeError.value(start);
-    if (end < start) throw new RangeError.value(end);
-    if (end > length) {
-      throw new RangeError.value(end);
-    }
-  }
-
-  external static _readInto(int id, List<int> buffer, int start, int end);
-
-  int readIntoSync(List<int> buffer, [int start, int end]) {
+  int readIntoSync(List<int> buffer, [int start = 0, int end]) {
     _checkAvailable();
-    if (buffer is !List ||
-        (start != null && start is !int) ||
-        (end != null && end is !int)) {
+    if ((buffer is !List) ||
+        ((start != null) && (start is !int)) ||
+        ((end != null) && (end is !int))) {
       throw new ArgumentError();
     }
-    if (start == null) start = 0;
-    if (end == null) end = buffer.length;
-    if (end == start) return 0;
-    _checkReadWriteListArguments(buffer.length, start, end);
-    var result = _readInto(_id, buffer, start, end);
+    end = RangeError.checkValidRange(start, end, buffer.length);
+    if (end == start) {
+      return 0;
+    }
+    var result = _ops.readInto(buffer, start, end);
     if (result is OSError) {
       throw new FileSystemException("readInto failed", path, result);
     }
+    _resourceInfo.addRead(result);
     return result;
   }
 
@@ -689,35 +733,39 @@ class _RandomAccessFile implements RandomAccessFile {
     if (value is !int) {
       throw new ArgumentError(value);
     }
-    return _dispatch(_FILE_WRITE_BYTE, [_id, value]).then((response) {
+    return _dispatch(_FILE_WRITE_BYTE, [null, value]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "writeByte failed", path);
       }
+      _resourceInfo.addWrite(1);
       return this;
     });
   }
-
-  external static _writeByte(int id, int value);
 
   int writeByteSync(int value) {
     _checkAvailable();
     if (value is !int) {
       throw new ArgumentError(value);
     }
-    var result = _writeByte(_id, value);
+    var result = _ops.writeByte(value);
     if (result is OSError) {
       throw new FileSystemException("writeByte failed", path, result);
     }
+    _resourceInfo.addWrite(1);
     return result;
   }
 
-  Future<RandomAccessFile> writeFrom(List<int> buffer, [int start, int end]) {
-    if ((buffer is !List && buffer is !ByteData) ||
-        (start != null && start is !int) ||
-        (end != null && end is !int)) {
+  Future<RandomAccessFile> writeFrom(
+      List<int> buffer, [int start = 0, int end]) {
+    if ((buffer is !List) ||
+        ((start != null) && (start is !int)) ||
+        ((end != null) && (end is !int))) {
       throw new ArgumentError("Invalid arguments to writeFrom");
     }
-
+    end = RangeError.checkValidRange(start, end, buffer.length);
+    if (end == start) {
+      return new Future.value(this);
+    }
     _BufferAndStart result;
     try {
       result = _ensureFastAndSerializableByteData(buffer, start, end);
@@ -726,7 +774,7 @@ class _RandomAccessFile implements RandomAccessFile {
     }
 
     List request = new List(4);
-    request[0] = _id;
+    request[0] = null;
     request[1] = result.buffer;
     request[2] = result.start;
     request[3] = end - (start - result.start);
@@ -734,32 +782,31 @@ class _RandomAccessFile implements RandomAccessFile {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "writeFrom failed", path);
       }
+      _resourceInfo.addWrite(end - (start - result.start));
       return this;
     });
   }
 
-  external static _writeFrom(int id, List<int> buffer, int start, int end);
-
-  void writeFromSync(List<int> buffer, [int start, int end]) {
+  void writeFromSync(List<int> buffer, [int start = 0, int end]) {
     _checkAvailable();
-    if (buffer is !List ||
-        (start != null && start is !int) ||
-        (end != null && end is !int)) {
+    if ((buffer is !List) ||
+        ((start != null) && (start is !int)) ||
+        ((end != null) && (end is !int))) {
       throw new ArgumentError("Invalid arguments to writeFromSync");
     }
-    if (start == null) start = 0;
-    if (end == null) end = buffer.length;
-    if (end == start) return;
-    _checkReadWriteListArguments(buffer.length, start, end);
+    end = RangeError.checkValidRange(start, end, buffer.length);
+    if (end == start) {
+      return;
+    }
     _BufferAndStart bufferAndStart =
         _ensureFastAndSerializableByteData(buffer, start, end);
-    var result = _writeFrom(_id,
-                            bufferAndStart.buffer,
-                            bufferAndStart.start,
-                            end - (start - bufferAndStart.start));
+    var result = _ops.writeFrom(bufferAndStart.buffer,
+                                bufferAndStart.start,
+                                end - (start - bufferAndStart.start));
     if (result is OSError) {
       throw new FileSystemException("writeFrom failed", path, result);
     }
+    _resourceInfo.addWrite(end - (start - bufferAndStart.start));
   }
 
   Future<RandomAccessFile> writeString(String string,
@@ -780,7 +827,7 @@ class _RandomAccessFile implements RandomAccessFile {
   }
 
   Future<int> position() {
-    return _dispatch(_FILE_POSITION, [_id]).then((response) {
+    return _dispatch(_FILE_POSITION, [null]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "position failed", path);
       }
@@ -788,11 +835,9 @@ class _RandomAccessFile implements RandomAccessFile {
     });
   }
 
-  external static _position(int id);
-
   int positionSync() {
     _checkAvailable();
-    var result = _position(_id);
+    var result = _ops.position();
     if (result is OSError) {
       throw new FileSystemException("position failed", path, result);
     }
@@ -800,7 +845,7 @@ class _RandomAccessFile implements RandomAccessFile {
   }
 
   Future<RandomAccessFile> setPosition(int position) {
-    return _dispatch(_FILE_SET_POSITION, [_id, position])
+    return _dispatch(_FILE_SET_POSITION, [null, position])
         .then((response) {
           if (_isErrorResponse(response)) {
             throw _exceptionFromResponse(response, "setPosition failed", path);
@@ -809,18 +854,16 @@ class _RandomAccessFile implements RandomAccessFile {
         });
   }
 
-  external static _setPosition(int id, int position);
-
   void setPositionSync(int position) {
     _checkAvailable();
-    var result = _setPosition(_id, position);
+    var result = _ops.setPosition(position);
     if (result is OSError) {
       throw new FileSystemException("setPosition failed", path, result);
     }
   }
 
   Future<RandomAccessFile> truncate(int length) {
-    return _dispatch(_FILE_TRUNCATE, [_id, length]).then((response) {
+    return _dispatch(_FILE_TRUNCATE, [null, length]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "truncate failed", path);
       }
@@ -828,18 +871,16 @@ class _RandomAccessFile implements RandomAccessFile {
     });
   }
 
-  external static _truncate(int id, int length);
-
   void truncateSync(int length) {
     _checkAvailable();
-    var result = _truncate(_id, length);
+    var result = _ops.truncate(length);
     if (result is OSError) {
       throw new FileSystemException("truncate failed", path, result);
     }
   }
 
   Future<int> length() {
-    return _dispatch(_FILE_LENGTH, [_id]).then((response) {
+    return _dispatch(_FILE_LENGTH, [null]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response, "length failed", path);
       }
@@ -847,11 +888,9 @@ class _RandomAccessFile implements RandomAccessFile {
     });
   }
 
-  external static _length(int id);
-
   int lengthSync() {
     _checkAvailable();
-    var result = _length(_id);
+    var result = _ops.length();
     if (result is OSError) {
       throw new FileSystemException("length failed", path, result);
     }
@@ -859,7 +898,7 @@ class _RandomAccessFile implements RandomAccessFile {
   }
 
   Future<RandomAccessFile> flush() {
-    return _dispatch(_FILE_FLUSH, [_id]).then((response) {
+    return _dispatch(_FILE_FLUSH, [null]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionFromResponse(response,
                                      "flush failed",
@@ -869,17 +908,101 @@ class _RandomAccessFile implements RandomAccessFile {
     });
   }
 
-  external static _flush(int id);
-
   void flushSync() {
     _checkAvailable();
-    var result = _flush(_id);
+    var result = _ops.flush();
     if (result is OSError) {
       throw new FileSystemException("flush failed", path, result);
     }
   }
 
-  bool get closed => _id == 0;
+  static final int LOCK_UNLOCK = 0;
+  static final int LOCK_SHARED = 1;
+  static final int LOCK_EXCLUSIVE = 2;
+  static final int LOCK_BLOCKING_SHARED = 3;
+  static final int LOCK_BLOCKING_EXCLUSIVE = 4;
+
+  int _fileLockValue(FileLock fl) {
+    switch (fl) {
+      case FileLock.SHARED: return LOCK_SHARED;
+      case FileLock.EXCLUSIVE: return LOCK_EXCLUSIVE;
+      case FileLock.BLOCKING_SHARED: return LOCK_BLOCKING_SHARED;
+      case FileLock.BLOCKING_EXCLUSIVE: return LOCK_BLOCKING_EXCLUSIVE;
+      default: return -1;
+    }
+  }
+
+  Future<RandomAccessFile> lock(
+      [FileLock mode = FileLock.EXCLUSIVE, int start = 0, int end = -1]) {
+    if ((mode is !FileLock) || (start is !int) || (end is !int)) {
+      throw new ArgumentError();
+    }
+    if ((start < 0) || (end < -1) || ((end != -1) && (start >= end))) {
+      throw new ArgumentError();
+    }
+    int lock = _fileLockValue(mode);
+    return _dispatch(_FILE_LOCK, [null, lock, start, end])
+        .then((response) {
+          if (_isErrorResponse(response)) {
+            throw _exceptionFromResponse(response, 'lock failed', path);
+          }
+          return this;
+        });
+  }
+
+  Future<RandomAccessFile> unlock([int start = 0, int end = -1]) {
+    if ((start is !int) || (end is !int)) {
+      throw new ArgumentError();
+    }
+    if (start == end) {
+      throw new ArgumentError();
+    }
+    return _dispatch(_FILE_LOCK, [null, LOCK_UNLOCK, start, end])
+        .then((response) {
+          if (_isErrorResponse(response)) {
+            throw _exceptionFromResponse(response, 'unlock failed', path);
+          }
+          return this;
+        });
+  }
+
+  void lockSync(
+      [FileLock mode = FileLock.EXCLUSIVE, int start = 0, int end = -1]) {
+    _checkAvailable();
+    if ((mode is !FileLock) || (start is !int) || (end is !int)) {
+      throw new ArgumentError();
+    }
+    if ((start < 0) || (end < -1) || ((end != -1) && (start >= end))) {
+      throw new ArgumentError();
+    }
+    int lock = _fileLockValue(mode);
+    var result = _ops.lock(lock, start, end);
+    if (result is OSError) {
+      throw new FileSystemException('lock failed', path, result);
+    }
+  }
+
+  void unlockSync([int start = 0, int end = -1]) {
+    _checkAvailable();
+    if ((start is !int) || (end is !int)) {
+      throw new ArgumentError();
+    }
+    if (start == end) {
+      throw new ArgumentError();
+    }
+    var result = _ops.lock(LOCK_UNLOCK, start, end);
+    if (result is OSError) {
+      throw new FileSystemException('unlock failed', path, result);
+    }
+  }
+
+  bool closed = false;
+
+  // Calling this function will increase the reference count on the native
+  // object that implements the file operations. It should only be called to
+  // pass the pointer to the IO Service, which will decrement the reference
+  // count when it is finished with it.
+  int _pointer() => _ops.getPointer();
 
   Future _dispatch(int request, List data, { bool markClosed: false }) {
     if (closed) {
@@ -890,12 +1013,13 @@ class _RandomAccessFile implements RandomAccessFile {
       return new Future.error(new FileSystemException(msg, path));
     }
     if (markClosed) {
-      // Set the id_ to 0 (NULL) to ensure the no more async requests
-      // can be issued for this file.
-      _id = 0;
+      // Set closed to true to ensure that no more async requests can be issued
+      // for this file.
+      closed = true;
     }
     _asyncDispatched = true;
-    return _IOService.dispatch(request, data)
+    data[0] = _pointer();
+    return _IOService._dispatch(request, data)
         .whenComplete(() {
           _asyncDispatched = false;
         });
@@ -903,7 +1027,8 @@ class _RandomAccessFile implements RandomAccessFile {
 
   void _checkAvailable() {
     if (_asyncDispatched) {
-      throw new FileSystemException("An async operation is currently pending", path);
+      throw new FileSystemException("An async operation is currently pending",
+                                    path);
     }
     if (closed) {
       throw new FileSystemException("File closed", path);

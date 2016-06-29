@@ -28,16 +28,19 @@ class _EventSinkWrapper<T> implements EventSink<T> {
 class _SinkTransformerStreamSubscription<S, T>
     extends _BufferingStreamSubscription<T> {
   /// The transformer's input sink.
-  EventSink _transformerSink;
+  EventSink<S> _transformerSink;
 
   /// The subscription to the input stream.
   StreamSubscription<S> _subscription;
 
   _SinkTransformerStreamSubscription(Stream<S> source,
-                                     _SinkMapper mapper,
+                                     _SinkMapper<S, T> mapper,
+                                     void onData(T data),
+                                     Function onError,
+                                     void onDone(),
                                      bool cancelOnError)
       // We set the adapter's target only when the user is allowed to send data.
-      : super(cancelOnError) {
+      : super(onData, onError, onDone, cancelOnError) {
     _EventSinkWrapper<T> eventSink = new _EventSinkWrapper<T>(this);
     _transformerSink = mapper(eventSink);
     _subscription = source.listen(_handleData,
@@ -171,6 +174,8 @@ class _BoundSinkStream<S, T> extends Stream<T> {
   final _SinkMapper<S, T> _sinkMapper;
   final Stream<S> _stream;
 
+  bool get isBroadcast => _stream.isBroadcast;
+
   _BoundSinkStream(this._stream, this._sinkMapper);
 
   StreamSubscription<T> listen(void onData(T event),
@@ -178,11 +183,9 @@ class _BoundSinkStream<S, T> extends Stream<T> {
                                  void onDone(),
                                  bool cancelOnError }) {
     cancelOnError = identical(true, cancelOnError);
-    StreamSubscription<T> subscription = new _SinkTransformerStreamSubscription(
-        _stream, _sinkMapper, cancelOnError);
-    subscription.onData(onData);
-    subscription.onError(onError);
-    subscription.onDone(onDone);
+    StreamSubscription<T> subscription =
+        new _SinkTransformerStreamSubscription<S, T>(
+            _stream, _sinkMapper, onData, onError, onDone, cancelOnError);
     return subscription;
   }
 }
@@ -211,10 +214,11 @@ class _HandlerEventSink<S, T> implements EventSink<S> {
   _HandlerEventSink(this._handleData, this._handleError, this._handleDone,
                     this._sink);
 
-  void add(S data) => _handleData(data, _sink);
-  void addError(Object error, [StackTrace stackTrace])
-      => _handleError(error, stackTrace, _sink);
-  void close() => _handleDone(_sink);
+  void add(S data) { _handleData(data, _sink); }
+  void addError(Object error, [StackTrace stackTrace]) {
+    _handleError(error, stackTrace, _sink);
+  }
+  void close() { _handleDone(_sink); }
 }
 
 /**
@@ -248,7 +252,7 @@ class _StreamHandlerTransformer<S, T> extends _StreamSinkTransformer<S, T> {
   /** Default error handler forwards all errors. */
   static void _defaultHandleError(error, StackTrace stackTrace,
                                   EventSink sink) {
-    sink.addError(error);
+    sink.addError(error, stackTrace);
   }
 
   /** Default done handler forwards done. */

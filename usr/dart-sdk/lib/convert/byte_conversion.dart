@@ -19,7 +19,7 @@ abstract class ByteConversionSink extends ChunkedConversionSink<List<int>> {
   ByteConversionSink();
   factory ByteConversionSink.withCallback(void callback(List<int> accumulated))
       = _ByteCallbackSink;
-  factory ByteConversionSink.from(ChunkedConversionSink<List<int>> sink)
+  factory ByteConversionSink.from(Sink<List<int>> sink)
       = _ByteAdapterSink;
 
   /**
@@ -54,18 +54,18 @@ abstract class ByteConversionSinkBase extends ByteConversionSink {
 }
 
 /**
- * This class adapts a simple [ChunkedConversionSink] to a [ByteConversionSink].
+ * This class adapts a simple [Sink] to a [ByteConversionSink].
  *
  * All additional methods of the [ByteConversionSink] (compared to the
  * ChunkedConversionSink) are redirected to the `add` method.
  */
 class _ByteAdapterSink extends ByteConversionSinkBase {
-  final ChunkedConversionSink<List<int>> _sink;
+  final Sink<List<int>> _sink;
 
   _ByteAdapterSink(this._sink);
 
-  void add(List<int> chunk) => _sink.add(chunk);
-  void close() => _sink.close();
+  void add(List<int> chunk) { _sink.add(chunk); }
+  void close() { _sink.close(); }
 }
 
 /**
@@ -78,8 +78,7 @@ class _ByteCallbackSink extends ByteConversionSinkBase {
   static const _INITIAL_BUFFER_SIZE = 1024;
 
   final _ChunkedConversionCallback<List<int>> _callback;
-  // TODO(11971, floitsch): use Uint8List instead of normal lists.
-  List<int> _buffer = new List<int>(_INITIAL_BUFFER_SIZE);
+  List<int> _buffer = new Uint8List(_INITIAL_BUFFER_SIZE);
   int _bufferIndex = 0;
 
   _ByteCallbackSink(void callback(List<int> accumulated))
@@ -91,8 +90,7 @@ class _ByteCallbackSink extends ByteConversionSinkBase {
       // Grow the buffer.
       int oldLength = _buffer.length;
       int newLength = _roundToPowerOf2(chunk.length + oldLength) * 2;
-      // TODO(11971, floitsch): use Uint8List instead of normal lists.
-      List<int> grown = new List<int>(newLength);
+      List<int> grown = new Uint8List(newLength);
       grown.setRange(0, _buffer.length, _buffer);
       _buffer = grown;
     }

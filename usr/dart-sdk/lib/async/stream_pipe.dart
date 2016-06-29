@@ -11,7 +11,14 @@ _runUserCode(userCode(),
   try {
     onSuccess(userCode());
   } catch (e, s) {
-    onError(e, s);
+    AsyncError replacement = Zone.current.errorCallback(e, s);
+    if (replacement == null) {
+      onError(e, s);
+    } else {
+      var error = _nonNullError(replacement.error);
+      var stackTrace = replacement.stackTrace;
+      onError(error, stackTrace);
+    }
   }
 }
 
@@ -29,10 +36,26 @@ void _cancelAndError(StreamSubscription subscription,
   }
 }
 
+void _cancelAndErrorWithReplacement(StreamSubscription subscription,
+                                    _Future future,
+                                    error, StackTrace stackTrace) {
+  AsyncError replacement = Zone.current.errorCallback(error, stackTrace);
+  if (replacement != null) {
+    error = _nonNullError(replacement.error);
+    stackTrace = replacement.stackTrace;
+  }
+  _cancelAndError(subscription, future, error, stackTrace);
+}
+
+typedef void _ErrorCallback(error, StackTrace stackTrace);
+
 /** Helper function to make an onError argument to [_runUserCode]. */
-_cancelAndErrorClosure(StreamSubscription subscription, _Future future) =>
-  ((error, StackTrace stackTrace) => _cancelAndError(
-      subscription, future, error, stackTrace));
+_ErrorCallback _cancelAndErrorClosure(
+    StreamSubscription subscription, _Future future) {
+  return (error, StackTrace stackTrace) {
+    _cancelAndError(subscription, future, error, stackTrace);
+  };
+}
 
 /** Helper function to cancel a subscription and wait for the potential future,
   before completing with a value. */
@@ -67,22 +90,22 @@ abstract class _ForwardingStream<S, T> extends Stream<T> {
                                 void onDone(),
                                 bool cancelOnError }) {
     cancelOnError = identical(true, cancelOnError);
-    StreamSubscription<T> result = _createSubscription(cancelOnError);
-    result.onData(onData);
-    result.onError(onError);
-    result.onDone(onDone);
-    return result;
+    return _createSubscription(onData, onError, onDone, cancelOnError);
   }
 
-  StreamSubscription<T> _createSubscription(bool cancelOnError) {
-    return new _ForwardingStreamSubscription<S, T>(this, cancelOnError);
+  StreamSubscription<T> _createSubscription(
+      void onData(T data),
+      Function onError,
+      void onDone(),
+      bool cancelOnError) {
+    return new _ForwardingStreamSubscription<S, T>(
+        this, onData, onError, onDone, cancelOnError);
   }
 
   // Override the following methods in subclasses to change the behavior.
 
   void _handleData(S data, _EventSink<T> sink) {
-    var outputData = data;
-    sink._add(outputData);
+    sink._add(data as Object /*=T*/);
   }
 
   void _handleError(error, StackTrace stackTrace, _EventSink<T> sink) {
@@ -103,8 +126,10 @@ class _ForwardingStreamSubscription<S, T>
 
   StreamSubscription<S> _subscription;
 
-  _ForwardingStreamSubscription(this._stream, bool cancelOnError)
-      : super(cancelOnError) {
+  _ForwardingStreamSubscription(this._stream, void onData(T data),
+                                Function onError, void onDone(),
+                                bool cancelOnError)
+      : super(onData, onError, onDone, cancelOnError) {
     _subscription = _stream._source.listen(_handleData,
                                            onError: _handleError,
                                            onDone: _handleDone);
@@ -140,7 +165,7 @@ class _ForwardingStreamSubscription<S, T>
     if (_subscription != null) {
       StreamSubscription subscription = _subscription;
       _subscription = null;
-      subscription.cancel();
+      return subscription.cancel();
     }
     return null;
   }
@@ -166,6 +191,16 @@ class _ForwardingStreamSubscription<S, T>
 
 typedef bool _Predicate<T>(T value);
 
+void _addErrorWithReplacement(_EventSink sink, error, stackTrace) {
+  AsyncError replacement = Zone.current.errorCallback(error, stackTrace);
+  if (replacement != null) {
+    error = _nonNullError(replacement.error);
+    stackTrace = replacement.stackTrace;
+  }
+  sink._addError(error, stackTrace);
+}
+
+
 class _WhereStream<T> extends _ForwardingStream<T, T> {
   final _Predicate<T> _test;
 
@@ -177,7 +212,7 @@ class _WhereStream<T> extends _ForwardingStream<T, T> {
     try {
       satisfies = _test(inputEvent);
     } catch (e, s) {
-      sink._addError(e, s);
+      _addErrorWithReplacement(sink, e, s);
       return;
     }
     if (satisfies) {
@@ -193,7 +228,7 @@ typedef T _Transformation<S, T>(S value);
  * A stream pipe that converts data events before passing them on.
  */
 class _MapStream<S, T> extends _ForwardingStream<S, T> {
-  final _Transformation _transform;
+  final _Transformation<S, T> _transform;
 
   _MapStream(Stream<S> source, T transform(S event))
       : this._transform = transform, super(source);
@@ -203,7 +238,7 @@ class _MapStream<S, T> extends _ForwardingStream<S, T> {
     try {
       outputEvent = _transform(inputEvent);
     } catch (e, s) {
-      sink._addError(e, s);
+      _addErrorWithReplacement(sink, e, s);
       return;
     }
     sink._add(outputEvent);
@@ -227,7 +262,7 @@ class _ExpandStream<S, T> extends _ForwardingStream<S, T> {
     } catch (e, s) {
       // If either _expand or iterating the generated iterator throws,
       // we abort the iteration.
-      sink._addError(e, s);
+      _addErrorWithReplacement(sink, e, s);
     }
   }
 }
@@ -254,7 +289,7 @@ class _HandleErrorStream<T> extends _ForwardingStream<T, T> {
       try {
         matches = _test(error);
       } catch (e, s) {
-        sink._addError(e, s);
+        _addErrorWithReplacement(sink, e, s);
         return;
       }
     }
@@ -265,7 +300,7 @@ class _HandleErrorStream<T> extends _ForwardingStream<T, T> {
         if (identical(e, error)) {
           sink._addError(error, stackTrace);
         } else {
-          sink._addError(e, s);
+          _addErrorWithReplacement(sink, e, s);
         }
         return;
       }
@@ -277,26 +312,58 @@ class _HandleErrorStream<T> extends _ForwardingStream<T, T> {
 
 
 class _TakeStream<T> extends _ForwardingStream<T, T> {
-  int _remaining;
+  final int _count;
 
   _TakeStream(Stream<T> source, int count)
-      : this._remaining = count, super(source) {
+      : this._count = count, super(source) {
     // This test is done early to avoid handling an async error
     // in the _handleData method.
     if (count is! int) throw new ArgumentError(count);
   }
 
+  StreamSubscription<T> _createSubscription(
+      void onData(T data),
+      Function onError,
+      void onDone(),
+      bool cancelOnError) {
+    return new _StateStreamSubscription<T>(
+        this, onData, onError, onDone, cancelOnError, _count);
+  }
+
   void _handleData(T inputEvent, _EventSink<T> sink) {
-    if (_remaining > 0) {
+    _StateStreamSubscription<T> subscription = sink;
+    int count = subscription._count;
+    if (count > 0) {
       sink._add(inputEvent);
-      _remaining -= 1;
-      if (_remaining == 0) {
+      count -= 1;
+      subscription._count = count;
+      if (count == 0) {
         // Closing also unsubscribes all subscribers, which unsubscribes
         // this from source.
         sink._close();
       }
     }
   }
+}
+
+/**
+ * A [_ForwardingStreamSubscription] with one extra state field.
+ *
+ * Use by several different classes, some storing an integer, others a bool.
+ */
+class _StateStreamSubscription<T> extends _ForwardingStreamSubscription<T, T> {
+  // Raw state field. Typed access provided by getters and setters below.
+  var _sharedState;
+
+  _StateStreamSubscription(_ForwardingStream<T, T> stream, void onData(T data),
+                           Function onError, void onDone(),
+                           bool cancelOnError, this._sharedState)
+      : super(stream, onData, onError, onDone, cancelOnError);
+
+  bool get _flag => _sharedState;
+  void set _flag(bool flag) { _sharedState = flag; }
+  int get _count => _sharedState;
+  void set _count(int count) { _sharedState = count; }
 }
 
 
@@ -311,7 +378,7 @@ class _TakeWhileStream<T> extends _ForwardingStream<T, T> {
     try {
       satisfies = _test(inputEvent);
     } catch (e, s) {
-      sink._addError(e, s);
+      _addErrorWithReplacement(sink, e, s);
       // The test didn't say true. Didn't say false either, but we stop anyway.
       sink._close();
       return;
@@ -325,18 +392,29 @@ class _TakeWhileStream<T> extends _ForwardingStream<T, T> {
 }
 
 class _SkipStream<T> extends _ForwardingStream<T, T> {
-  int _remaining;
+  final int _count;
 
   _SkipStream(Stream<T> source, int count)
-      : this._remaining = count, super(source) {
+      : this._count = count, super(source) {
     // This test is done early to avoid handling an async error
     // in the _handleData method.
     if (count is! int || count < 0) throw new ArgumentError(count);
   }
 
+  StreamSubscription<T> _createSubscription(
+      void onData(T data),
+      Function onError,
+      void onDone(),
+      bool cancelOnError) {
+    return new _StateStreamSubscription<T>(
+        this, onData, onError, onDone, cancelOnError, _count);
+  }
+
   void _handleData(T inputEvent, _EventSink<T> sink) {
-    if (_remaining > 0) {
-      _remaining--;
+    _StateStreamSubscription<T> subscription = sink;
+    int count = subscription._count;
+    if (count > 0) {
+      subscription._count = count - 1;
       return;
     }
     sink._add(inputEvent);
@@ -345,13 +423,23 @@ class _SkipStream<T> extends _ForwardingStream<T, T> {
 
 class _SkipWhileStream<T> extends _ForwardingStream<T, T> {
   final _Predicate<T> _test;
-  bool _hasFailed = false;
 
   _SkipWhileStream(Stream<T> source, bool test(T value))
       : this._test = test, super(source);
 
+  StreamSubscription<T> _createSubscription(
+      void onData(T data),
+      Function onError,
+      void onDone(),
+      bool cancelOnError) {
+    return new _StateStreamSubscription<T>(
+        this, onData, onError, onDone, cancelOnError, false);
+  }
+
   void _handleData(T inputEvent, _EventSink<T> sink) {
-    if (_hasFailed) {
+    _StateStreamSubscription<T> subscription = sink;
+    bool hasFailed = subscription._flag;
+    if (hasFailed) {
       sink._add(inputEvent);
       return;
     }
@@ -359,13 +447,13 @@ class _SkipWhileStream<T> extends _ForwardingStream<T, T> {
     try {
       satisfies = _test(inputEvent);
     } catch (e, s) {
-      sink._addError(e, s);
+      _addErrorWithReplacement(sink, e, s);
       // A failure to return a boolean is considered "not matching".
-      _hasFailed = true;
+      subscription._flag = true;
       return;
     }
     if (!satisfies) {
-      _hasFailed = true;
+      subscription._flag = true;
       sink._add(inputEvent);
     }
   }
@@ -392,10 +480,10 @@ class _DistinctStream<T> extends _ForwardingStream<T, T> {
         if (_equals == null) {
           isEqual = (_previous == inputEvent);
         } else {
-          isEqual = _equals(_previous, inputEvent);
+          isEqual = _equals(_previous as Object /*=T*/, inputEvent);
         }
       } catch (e, s) {
-        sink._addError(e, s);
+        _addErrorWithReplacement(sink, e, s);
         return null;
       }
       if (!isEqual) {

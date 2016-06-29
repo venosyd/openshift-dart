@@ -43,8 +43,10 @@
  * ## Stream
  *
  * A Stream provides an asynchronous sequence of data.
- * Examples of data sequences include user-generated events,
- * such as mouse clicks, and a stream of bytes read from a file.
+ * Examples of data sequences include individual events, like mouse clicks,
+ * or sequential chunks of larger data, like multiple byte lists with the
+ * contents of a file
+ * such as mouse clicks, and a stream of byte lists read from a file.
  * The following example opens a file for reading.
  * [Stream.listen] registers a callback function that runs
  * each time more data is available.
@@ -65,31 +67,33 @@
  *
  * ## Other resources
  *
- * * The [dart:async section of the library tour]
- * (https://www.dartlang.org/docs/dart-up-and-running/contents/ch03.html#ch03-asynchronous-programming):
- * A brief overview of asynchronous programming.
+ * * The [dart:async section of the library tour][asynchronous-programming]:
+ *   A brief overview of asynchronous programming.
  *
- * * [Use Future-Based APIs]
- * (https://www.dartlang.org/docs/tutorials/futures/): A closer look at
- * Futures and how to use them to write asynchronous Dart code.
+ * * [Use Future-Based APIs][futures-tutorial]: A closer look at Futures and
+ *   how to use them to write asynchronous Dart code.
  *
- * * [Futures and Error Handling]
- * (https://www.dartlang.org/articles/futures-and-error-handling/): Everything
- * you wanted to know about handling errors and exceptions when working with
- * Futures (but were afraid to ask).
+ * * [Futures and Error Handling][futures-error-handling]: Everything you
+ *   wanted to know about handling errors and exceptions when working with
+ *   Futures (but were afraid to ask).
  *
  * * [The Event Loop and Dart](https://www.dartlang.org/articles/event-loop/):
- * Learn how Dart handles the event queue and microtask queue, so you can write
- * better asynchronous code with fewer surprises.
+ *   Learn how Dart handles the event queue and microtask queue, so you can
+ *   write better asynchronous code with fewer surprises.
  *
- * * [Asynchronous Unit Testing with Dart]
- * (https://www.dartlang.org/articles/dart-unit-tests/#asynchronous-tests): How
- * to test asynchronous code.
+ * * [test package: Asynchronous Tests][test-readme]: How to test asynchronous
+ *   code.
+ *
+ * [asynchronous-programming]: https://www.dartlang.org/docs/dart-up-and-running/ch03.html#dartasync---asynchronous-programming
+ * [futures-tutorial]: https://www.dartlang.org/docs/tutorials/futures/
+ * [futures-error-handling]: https://www.dartlang.org/articles/futures-and-error-handling/
+ * [test-readme]: https://pub.dartlang.org/packages/test
  */
 library dart.async;
 
 import "dart:collection";
-import "dart:_internal" show deprecated, printToZone, printToConsole;
+import "dart:_internal" show printToZone, printToConsole,
+                             IterableElementError;
 
 part 'async_error.dart';
 part 'broadcast_stream_controller.dart';

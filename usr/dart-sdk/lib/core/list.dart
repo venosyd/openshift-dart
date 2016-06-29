@@ -61,12 +61,16 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
    *     fixedLengthList.length;     // 3
    *     fixedLengthList.length = 1; // Error
    *
-   *
    * The list has length 0 and is growable if [length] is omitted.
    *
    *     List growableList = new List();
    *     growableList.length; // 0;
    *     growableList.length = 3;
+   *
+   * To create a growable list with a given length, just assign the length
+   * right after creation:
+   *
+   *     List growableList = new List()..length = 500;
    *
    * The [length] must not be negative or null, if it is provided.
    */
@@ -78,31 +82,24 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
    *
    *     new List<int>.filled(3, 0); // [0, 0, 0]
    *
-   * The [length] must not be negative or null.
+   * The [length] must be a non-negative integer.
+   *
+   * If the list is growable, changing its length will not initialize new
+   * entries with [fill]. After being created and filled, the list is
+   * no different from any other growable or fixed-length list
+   * created using [List].
    */
-  external factory List.filled(int length, E fill);
+  external factory List.filled(int length, E fill, {bool growable: false});
 
   /**
-   * Creates a list and initializes it using the contents of [other].
+   * Creates a list containing all [elements].
    *
-   * The [Iterator] of [other] provides the order of the objects.
+   * The [Iterator] of [elements] provides the order of the elements.
    *
-   * This constructor returns a growable list if [growable] is true;
+   * This constructor returns a growable list when [growable] is true;
    * otherwise, it returns a fixed-length list.
    */
-  factory List.from(Iterable other, { bool growable: true }) {
-    List<E> list = new List<E>();
-    for (E e in other) {
-      list.add(e);
-    }
-    if (growable) return list;
-    int length = list.length;
-    List<E> fixedList = new List<E>(length);
-    for (int i = 0; i < length; i++) {
-      fixedList[i] = list[i];
-    }
-    return fixedList;
-  }
+  external factory List.from(Iterable elements, { bool growable: true });
 
   /**
    * Generates a list of values.
@@ -128,6 +125,17 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
     }
     return result;
   }
+
+  /**
+   * Creates an unmodifiable list containing all [elements].
+   *
+   * The [Iterator] of [elements] provides the order of the elements.
+   *
+   * An unmodifiable list cannot have its length or elements changed.
+   * If the elements are themselves immutable, then the resulting list
+   * is also immutable.
+   */
+  external factory List.unmodifiable(Iterable elements);
 
   /**
    * Returns the object at the given [index] in the list
@@ -156,7 +164,7 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
    *
    * Throws an [UnsupportedError] if the list is fixed-length.
    */
-  void set length(int newLength);
+  set length(int newLength);
 
   /**
    * Adds [value] to the end of this list,
@@ -183,18 +191,27 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
    * Sorts this list according to the order specified by the [compare] function.
    *
    * The [compare] function must act as a [Comparator].
-
-   *     List<String> numbers = ['one', 'two', 'three', 'four'];
+   *
+   *     List<String> numbers = ['two', 'three', 'four'];
    *     // Sort from shortest to longest.
-   *     numbers.sort((x, y) => x.length.compareTo(y.length));
-   *     numbers.join(', '); // 'one, two, four, three'
+   *     numbers.sort((a, b) => a.length.compareTo(b.length));
+   *     print(numbers);  // [two, four, three]
    *
    * The default List implementations use [Comparable.compare] if
    * [compare] is omitted.
    *
    *     List<int> nums = [13, 2, -11];
    *     nums.sort();
-         nums.join(', '); // '-11, 2, 13'
+   *     print(nums);  // [-11, 2, 13]
+   *
+   * A [Comparator] may compare objects as equal (return zero), even if they
+   * are distinct objects.
+   * The sort function is not guaranteed to be stable, so distinct objects
+   * that compare as equal may occur in any order in the result:
+   *
+   *     List<String> numbers = ['one', 'two', 'three', 'four'];
+   *     numbers.sort((a, b) => a.length.compareTo(b.length));
+   *     print(numbers);  // [one, two, four, three] OR [two, one, four, three]
    */
   void sort([int compare(E a, E b)]);
 
@@ -449,6 +466,10 @@ abstract class List<E> implements Iterable<E>, EfficientLength {
    *     list.join(', '); // '1, 6, 7, 5'
    *
    * An error occurs if [start]..[end] is not a valid range for `this`.
+   *
+   * This method does not work on fixed-length lists, even when [replacement]
+   * has the same number of elements as the replaced range. In that case use
+   * [setRange] instead.
    */
   void replaceRange(int start, int end, Iterable<E> replacement);
 

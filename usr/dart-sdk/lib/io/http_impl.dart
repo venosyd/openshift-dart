@@ -4,7 +4,9 @@
 
 part of dart.io;
 
-const int _HEADERS_BUFFER_SIZE = 8 * 1024;
+const int _OUTGOING_BUFFER_SIZE = 8 * 1024;
+
+typedef void _BytesConsumer(List<int> bytes);
 
 class _HttpIncoming extends Stream<List<int>> {
   final int _transferLength;
@@ -129,13 +131,14 @@ class _HttpRequest extends _HttpInboundMessage implements HttpRequest {
       var proto = headers['x-forwarded-proto'];
       var scheme = proto != null ? proto.first :
           _httpConnection._socket is SecureSocket ? "https" : "http";
-      var host = headers['x-forwarded-host'];
-      if (host != null) {
-        host = host.first;
+      var hostList = headers['x-forwarded-host'];
+      String host;
+      if (hostList != null) {
+        host = hostList.first;
       } else {
-        host = headers['host'];
-        if (host != null) {
-          host = host.first;
+        hostList = headers['host'];
+        if (hostList != null) {
+          host = hostList.first;
         } else {
           host = "${_httpServer.address.host}:${_httpServer.port}";
         }
@@ -182,8 +185,6 @@ class _HttpClientResponse
   // The HttpClientRequest of this response.
   final _HttpClientRequest _httpRequest;
 
-  List<Cookie> _cookies;
-
   _HttpClientResponse(_HttpIncoming _incoming, this._httpRequest,
                       this._httpClient) : super(_incoming) {
     // Set uri for potential exceptions.
@@ -194,9 +195,9 @@ class _HttpClientResponse
   String get reasonPhrase => _incoming.reasonPhrase;
 
   X509Certificate get certificate {
-    // The peerCertificate isn't on a plain socket, so cast to dynamic.
     var socket = _httpRequest._httpClientConnection._socket;
-    return socket.peerCertificate;
+    if (socket is SecureSocket) return socket.peerCertificate;
+    throw new UnsupportedError("Socket is not a SecureSocket");
   }
 
   List<Cookie> get cookies {
@@ -262,8 +263,16 @@ class _HttpClientResponse
                                        {Function onError,
                                         void onDone(),
                                         bool cancelOnError}) {
+    if (_incoming.upgraded) {
+      // If upgraded, the connection is already 'removed' form the client.
+      // Since listening to upgraded data is 'bogus', simply close and
+      // return empty stream subscription.
+      _httpRequest._httpClientConnection.destroy();
+      return new Stream<List<int>>.empty().listen(null, onDone: onDone);
+    }
     var stream = _incoming;
-    if (headers.value(HttpHeaders.CONTENT_ENCODING) == "gzip") {
+    if (_httpClient.autoUncompress &&
+        headers.value(HttpHeaders.CONTENT_ENCODING) == "gzip") {
       stream = stream.transform(GZIP.decoder);
     }
     return stream.listen(onData,
@@ -310,7 +319,8 @@ class _HttpClientResponse
     }
 
     _Credentials findCredentials(_AuthenticationScheme scheme) {
-      return proxyAuth ? _httpClient._findProxyCredentials(_httpRequest._proxy, scheme)
+      return proxyAuth ? _httpClient._findProxyCredentials(_httpRequest._proxy,
+                                                           scheme)
                        : _httpClient._findCredentials(_httpRequest.uri, scheme);
     }
 
@@ -406,28 +416,33 @@ class _HttpClientResponse
 }
 
 
-abstract class _HttpOutboundMessage<T> implements IOSink {
+abstract class _HttpOutboundMessage<T> extends _IOSinkImpl {
   // Used to mark when the body should be written. This is used for HEAD
   // requests and in error handling.
-  bool _ignoreBody = false;
-  bool _headersWritten = false;
-  bool _asGZip = false;
+  bool _encodingSet = false;
 
-  IOSink _headersSink;
-  IOSink _dataSink;
+  bool _bufferOutput = true;
 
-  final _HttpOutgoing _outgoing;
   final Uri _uri;
+  final _HttpOutgoing _outgoing;
 
   final _HttpHeaders headers;
 
-  _HttpOutboundMessage(this._uri,
+  _HttpOutboundMessage(Uri uri,
                        String protocolVersion,
-                       _HttpOutgoing outgoing)
-      : _outgoing = outgoing,
-        _headersSink = new IOSink(outgoing, encoding: ASCII),
-        headers = new _HttpHeaders(protocolVersion) {
-    _dataSink = new IOSink(new _HttpOutboundConsumer(this));
+                       _HttpOutgoing outgoing,
+                       {_HttpHeaders initialHeaders})
+      : _uri = uri,
+        headers = new _HttpHeaders(
+            protocolVersion,
+            defaultPortForScheme: uri.scheme == 'https' ?
+                HttpClient.DEFAULT_HTTPS_PORT :
+                HttpClient.DEFAULT_HTTP_PORT,
+            initialHeaders: initialHeaders),
+        _outgoing = outgoing,
+        super(outgoing, null) {
+    _outgoing.outbound = this;
+    _encodingMutable = false;
   }
 
   int get contentLength => headers.contentLength;
@@ -440,7 +455,17 @@ abstract class _HttpOutboundMessage<T> implements IOSink {
     headers.persistentConnection = p;
   }
 
+  bool get bufferOutput => _bufferOutput;
+  void set bufferOutput(bool bufferOutput) {
+    if (_outgoing.headersWritten) throw new StateError("Header already sent");
+    _bufferOutput = bufferOutput;
+  }
+
+
   Encoding get encoding {
+    if (_encodingSet && _outgoing.headersWritten) {
+      return _encoding;
+    }
     var charset;
     if (headers.contentType != null && headers.contentType.charset != null) {
       charset = headers.contentType.charset;
@@ -450,271 +475,22 @@ abstract class _HttpOutboundMessage<T> implements IOSink {
     return Encoding.getByName(charset);
   }
 
-  void set encoding(Encoding value) {
-    throw new StateError("IOSink encoding is not mutable");
+  void add(List<int> data) {
+    if (data.length == 0) return;
+    super.add(data);
   }
 
   void write(Object obj) {
-    if (!_headersWritten) _dataSink.encoding = encoding;
-    _dataSink.write(obj);
-  }
-
-  void writeAll(Iterable objects, [String separator = ""]) {
-    if (!_headersWritten) _dataSink.encoding = encoding;
-    _dataSink.writeAll(objects, separator);
-  }
-
-  void writeln([Object obj = ""]) {
-    if (!_headersWritten) _dataSink.encoding = encoding;
-    _dataSink.writeln(obj);
-  }
-
-  void writeCharCode(int charCode) {
-    if (!_headersWritten) _dataSink.encoding = encoding;
-    _dataSink.writeCharCode(charCode);
-  }
-
-  void add(List<int> data) {
-    if (data.length == 0) return;
-    _dataSink.add(data);
-  }
-
-  void addError(error, [StackTrace stackTrace]) =>
-      _dataSink.addError(error, stackTrace);
-
-  Future<T> addStream(Stream<List<int>> stream) => _dataSink.addStream(stream);
-
-  Future flush() => _dataSink.flush();
-
-  Future close() => _dataSink.close();
-
-  Future<T> get done => _dataSink.done;
-
-  Future _writeHeaders({bool drainRequest: true}) {
-    void write() {
-      try {
-        _writeHeader();
-      } catch (error) {
-        // Headers too large.
-        throw new HttpException(
-            "Headers size exceeded the of '$_HEADERS_BUFFER_SIZE' bytes");
-      }
+    if (!_encodingSet) {
+      _encoding = encoding;
+      _encodingSet = true;
     }
-    if (_headersWritten) return new Future.value();
-    _headersWritten = true;
-    _dataSink.encoding = encoding;
-    bool isServerSide = this is _HttpResponse;
-    if (isServerSide) {
-      var response = this;
-      if (headers.chunkedTransferEncoding) {
-        List acceptEncodings =
-            response._httpRequest.headers[HttpHeaders.ACCEPT_ENCODING];
-        List contentEncoding = headers[HttpHeaders.CONTENT_ENCODING];
-        if (acceptEncodings != null &&
-            acceptEncodings
-                .expand((list) => list.split(","))
-                .any((encoding) => encoding.trim().toLowerCase() == "gzip") &&
-            contentEncoding == null) {
-          headers.set(HttpHeaders.CONTENT_ENCODING, "gzip");
-          _asGZip = true;
-        }
-      }
-      if (drainRequest && !response._httpRequest._incoming.hasSubscriber) {
-        return response._httpRequest.drain()
-            // TODO(ajohnsen): Timeout on drain?
-            .catchError((_) {})  // Ignore errors.
-            .then((_) => write());
-      }
-    }
-    return new Future.sync(write);
-  }
-
-  Future _addStream(Stream<List<int>> stream) {
-    return _writeHeaders()
-        .then((_) {
-          int contentLength = headers.contentLength;
-          if (_ignoreBody) {
-            stream.drain().catchError((_) {});
-            return _headersSink.close();
-          }
-          stream = stream.transform(const _BufferTransformer());
-          if (headers.chunkedTransferEncoding) {
-            if (_asGZip) {
-              stream = stream.transform(GZIP.encoder);
-            }
-            stream = stream.transform(const _ChunkedTransformer());
-          } else if (contentLength >= 0) {
-            stream = stream.transform(
-                new _ContentLengthValidator(contentLength, _uri));
-          }
-          return _headersSink.addStream(stream);
-        });
-  }
-
-  Future _close() {
-    if (!_headersWritten) {
-      if (!_ignoreBody && headers.contentLength == -1) {
-        // If no body was written, _ignoreBody is false (it's not a HEAD
-        // request) and the content-length is unspecified, set contentLength to
-        // 0.
-        headers.chunkedTransferEncoding = false;
-        headers.contentLength = 0;
-      } else if (!_ignoreBody && headers.contentLength > 0) {
-        _headersSink.addError(new HttpException(
-            "No content while contentLength was specified to be greater "
-            "than 0: ${headers.contentLength}.",
-            uri: _uri));
-        return _headersSink.done;
-      }
-    }
-    return _writeHeaders().whenComplete(_headersSink.close);
+    super.write(obj);
   }
 
   void _writeHeader();
-}
 
-
-class _HttpOutboundConsumer implements StreamConsumer {
-  final _HttpOutboundMessage _outbound;
-  StreamController _controller;
-  StreamSubscription _subscription;
-  Completer _closeCompleter = new Completer();
-  Completer _completer;
-  bool _socketError = false;
-
-  _HttpOutboundConsumer(this._outbound);
-
-  void _cancel() {
-    if (_subscription != null) {
-      StreamSubscription subscription = _subscription;
-      _subscription = null;
-      subscription.cancel();
-    }
-  }
-
-  bool _ignoreError(error)
-    => (error is SocketException || error is TlsException) &&
-       _outbound is HttpResponse;
-
-  _ensureController() {
-    if (_controller != null) return;
-    _controller = new StreamController(sync: true,
-                                       onPause: () => _subscription.pause(),
-                                       onResume: () => _subscription.resume(),
-                                       onListen: () => _subscription.resume(),
-                                       onCancel: _cancel);
-    _outbound._addStream(_controller.stream)
-        .then((_) {
-                _cancel();
-                _done();
-                _closeCompleter.complete(_outbound);
-              },
-              onError: (error, [StackTrace stackTrace]) {
-                _socketError = true;
-                if (_ignoreError(error)) {
-                  _cancel();
-                  _done();
-                  _closeCompleter.complete(_outbound);
-                } else {
-                  if (!_done(error)) {
-                    _closeCompleter.completeError(error, stackTrace);
-                  }
-                }
-              });
-  }
-
-  bool _done([error, StackTrace stackTrace]) {
-    if (_completer == null) return false;
-    if (error != null) {
-      _completer.completeError(error, stackTrace);
-    } else {
-      _completer.complete(_outbound);
-    }
-    _completer = null;
-    return true;
-  }
-
-  Future addStream(var stream) {
-    // If we saw a socket error subscribe and then cancel, to ignore any data
-    // on the stream.
-    if (_socketError) {
-      stream.listen(null).cancel();
-      return new Future.value(_outbound);
-    }
-    _completer = new Completer();
-    _subscription = stream.listen(
-        (data) => _controller.add(data),
-        onDone: _done,
-        onError: (e, s) => _controller.addError(e, s),
-        cancelOnError: true);
-    // Pause the first request.
-    if (_controller == null) _subscription.pause();
-    _ensureController();
-    return _completer.future;
-  }
-
-  Future close() {
-    Future closeOutbound() {
-      if (_socketError) return new Future.value(_outbound);
-      return _outbound._close()
-          .catchError((_) {}, test: _ignoreError)
-          .then((_) => _outbound);
-    }
-    if (_controller == null) return closeOutbound();
-    _controller.close();
-    return _closeCompleter.future.then((_) => closeOutbound());
-  }
-}
-
-
-class _BufferTransformerSink implements EventSink<List<int>> {
-  static const int MIN_CHUNK_SIZE = 4 * 1024;
-  static const int MAX_BUFFER_SIZE = 16 * 1024;
-
-  final BytesBuilder _builder = new BytesBuilder();
-  final EventSink<List<int>> _outSink;
-
-  _BufferTransformerSink(this._outSink);
-
-  void add(List<int> data) {
-    // TODO(ajohnsen): Use timeout?
-    if (data.length == 0) return;
-    if (data.length >= MIN_CHUNK_SIZE) {
-      flush();
-      _outSink.add(data);
-    } else {
-      _builder.add(data);
-      if (_builder.length >= MAX_BUFFER_SIZE) {
-        flush();
-      }
-    }
-  }
-
-  void addError(Object error, [StackTrace stackTrace]) {
-    _outSink.addError(error, stackTrace);
-  }
-
-  void close() {
-    flush();
-    _outSink.close();
-  }
-
-  void flush() {
-    if (_builder.length > 0) {
-      // takeBytes will clear the BytesBuilder.
-      _outSink.add(_builder.takeBytes());
-    }
-  }
-}
-
-class _BufferTransformer implements StreamTransformer<List<int>, List<int>> {
-  const _BufferTransformer();
-
-  Stream<List<int>> bind(Stream<List<int>> stream) {
-    return new Stream<List<int>>.eventTransformed(
-        stream,
-        (EventSink outSink) => new _BufferTransformerSink(outSink));
-  }
+  bool get _isConnectionClosed => false;
 }
 
 
@@ -730,10 +506,13 @@ class _HttpResponse extends _HttpOutboundMessage<HttpResponse>
   _HttpResponse(Uri uri,
                 String protocolVersion,
                 _HttpOutgoing outgoing,
+                HttpHeaders defaultHeaders,
                 String serverHeader)
-      : super(uri, protocolVersion, outgoing) {
-    if (serverHeader != null) headers._add('server', serverHeader);
+      : super(uri, protocolVersion, outgoing, initialHeaders: defaultHeaders) {
+    if (serverHeader != null) headers.set('server', serverHeader);
   }
+
+  bool get _isConnectionClosed => _httpRequest._httpConnection._isClosing;
 
   List<Cookie> get cookies {
     if (_cookies == null) _cookies = new List<Cookie>();
@@ -742,28 +521,35 @@ class _HttpResponse extends _HttpOutboundMessage<HttpResponse>
 
   int get statusCode => _statusCode;
   void set statusCode(int statusCode) {
-    if (_headersWritten) throw new StateError("Header already sent");
+    if (_outgoing.headersWritten) throw new StateError("Header already sent");
     _statusCode = statusCode;
   }
 
   String get reasonPhrase => _findReasonPhrase(statusCode);
   void set reasonPhrase(String reasonPhrase) {
-    if (_headersWritten) throw new StateError("Header already sent");
+    if (_outgoing.headersWritten) throw new StateError("Header already sent");
     _reasonPhrase = reasonPhrase;
   }
 
   Future redirect(Uri location, {int status: HttpStatus.MOVED_TEMPORARILY}) {
-    if (_headersWritten) throw new StateError("Header already sent");
+    if (_outgoing.headersWritten) throw new StateError("Header already sent");
     statusCode = status;
     headers.set("location", location.toString());
     return close();
   }
 
-  Future<Socket> detachSocket() {
-    if (_headersWritten) throw new StateError("Headers already sent");
+  Future<Socket> detachSocket({bool writeHeaders: true}) {
+    if (_outgoing.headersWritten) throw new StateError("Headers already sent");
     deadline = null;  // Be sure to stop any deadline.
     var future = _httpRequest._httpConnection.detachSocket();
-    _writeHeaders(drainRequest: false).then((_) => close());
+    if (writeHeaders) {
+      var headersFuture = _outgoing.writeHeaders(drainRequest: false,
+                                                 setOutgoing: false);
+      assert(headersFuture == null);
+    } else {
+      // Imitate having written the headers.
+      _outgoing.headersWritten = true;
+    }
     // Close connection so the socket is 'free'.
     close();
     done.catchError((_) {
@@ -783,12 +569,12 @@ class _HttpResponse extends _HttpOutboundMessage<HttpResponse>
 
     if (_deadline == null) return;
     _deadlineTimer = new Timer(_deadline, () {
-      _outgoing.socket.destroy();
+      _httpRequest._httpConnection.destroy();
     });
   }
 
   void _writeHeader() {
-    Uint8List buffer = _httpRequest._httpConnection._headersBuffer;
+    Uint8List buffer = new Uint8List(_OUTGOING_BUFFER_SIZE);
     int offset = 0;
 
     void write(List<int> bytes) {
@@ -847,7 +633,7 @@ class _HttpResponse extends _HttpOutboundMessage<HttpResponse>
     offset = headers._write(buffer, offset);
     buffer[offset++] = _CharCode.CR;
     buffer[offset++] = _CharCode.LF;
-    _headersSink.add(new Uint8List.view(buffer.buffer, 0, offset));
+    _outgoing.setHeader(buffer, offset);
   }
 
   String _findReasonPhrase(int statusCode) {
@@ -933,8 +719,8 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
 
   _HttpClientRequest(_HttpOutgoing outgoing, Uri uri, this.method, this._proxy,
                      this._httpClient, this._httpClientConnection)
-      : super(uri, "1.1", outgoing),
-        uri = uri {
+      : uri = uri,
+        super(uri, "1.1", outgoing) {
     // GET and HEAD have 'content-length: 0' by default.
     if (method == "GET" || method == "HEAD") {
       contentLength = 0;
@@ -959,13 +745,13 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
 
   int get maxRedirects => _maxRedirects;
   void set maxRedirects(int maxRedirects) {
-    if (_headersWritten) throw new StateError("Request already sent");
+    if (_outgoing.headersWritten) throw new StateError("Request already sent");
     _maxRedirects = maxRedirects;
   }
 
   bool get followRedirects => _followRedirects;
   void set followRedirects(bool followRedirects) {
-    if (_headersWritten) throw new StateError("Request already sent");
+    if (_outgoing.headersWritten) throw new StateError("Request already sent");
     _followRedirects = followRedirects;
   }
 
@@ -977,13 +763,16 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
     if (followRedirects && response.isRedirect) {
       if (response.redirects.length < maxRedirects) {
         // Redirect and drain response.
-        future = response.drain().then((_) => response.redirect());
+        future = response.drain()
+            .then/*<HttpClientResponse>*/((_) => response.redirect());
       } else {
         // End with exception, too many redirects.
         future = response.drain()
-            .then((_) => new Future.error(
-                new RedirectException("Redirect limit exceeded",
-                                      response.redirects)));
+            .then/*<HttpClientResponse>*/((_) {
+          return new Future<HttpClientResponse>.error(
+              new RedirectException("Redirect limit exceeded",
+                  response.redirects));
+        });
       }
     } else if (response._shouldAuthenticateProxy) {
       future = response._authenticate(true);
@@ -1006,13 +795,9 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
     // Generate the request URI starting from the path component.
     String uriStartingFromPath() {
       String result = uri.path;
-      if (result.length == 0) result = "/";
-      if (uri.query != "") {
-        if (uri.fragment != "") {
-          result = "${result}?${uri.query}#${uri.fragment}";
-        } else {
-          result = "${result}?${uri.query}";
-        }
+      if (result.isEmpty) result = "/";
+      if (uri.hasQuery) {
+        result = "${result}?${uri.query}";
       }
       return result;
     }
@@ -1029,14 +814,14 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
         if (_httpClientConnection._proxyTunnel) {
           return uriStartingFromPath();
         } else {
-          return uri.toString();
+          return uri.removeFragment().toString();
         }
       }
     }
   }
 
   void _writeHeader() {
-    Uint8List buffer = _httpClientConnection._headersBuffer;
+    Uint8List buffer = new Uint8List(_OUTGOING_BUFFER_SIZE);
     int offset = 0;
 
     void write(List<int> bytes) {
@@ -1074,41 +859,387 @@ class _HttpClientRequest extends _HttpOutboundMessage<HttpClientResponse>
     offset = headers._write(buffer, offset);
     buffer[offset++] = _CharCode.CR;
     buffer[offset++] = _CharCode.LF;
-    _headersSink.add(new Uint8List.view(buffer.buffer, 0, offset));
+    _outgoing.setHeader(buffer, offset);
   }
 }
 
+// Used by _HttpOutgoing as a target of a chunked converter for gzip
+// compression.
+class _HttpGZipSink extends ByteConversionSink {
+  final _BytesConsumer _consume;
+  _HttpGZipSink(this._consume);
 
-class _ChunkedTransformerSink implements EventSink<List<int>> {
-
-  int _pendingFooter = 0;
-  final EventSink<List<int>> _outSink;
-
-  _ChunkedTransformerSink(this._outSink);
-
-  void add(List<int> data) {
-    _outSink.add(_chunkHeader(data.length));
-    if (data.length > 0) _outSink.add(data);
-    _pendingFooter = 2;
+  void add(List<int> chunk) {
+    _consume(chunk);
   }
 
-  void addError(Object error, [StackTrace stackTrace]) {
-    _outSink.addError(error, stackTrace);
+  void addSlice(List<int> chunk, int start, int end, bool isLast) {
+    if (chunk is Uint8List) {
+      _consume(new Uint8List.view(chunk.buffer, start, end - start));
+    } else {
+      _consume(chunk.sublist(start, end - start));
+    }
   }
 
-  void close() {
-    add(const []);
-    _outSink.close();
+  void close() {}
+}
+
+
+// The _HttpOutgoing handles all of the following:
+//  - Buffering
+//  - GZip compressionm
+//  - Content-Length validation.
+//  - Errors.
+//
+// Most notable is the GZip compression, that uses a double-buffering system,
+// one before gzip (_gzipBuffer) and one after (_buffer).
+class _HttpOutgoing implements StreamConsumer<List<int>> {
+  static const List<int> _footerAndChunk0Length =
+      const [_CharCode.CR, _CharCode.LF, 0x30, _CharCode.CR, _CharCode.LF,
+             _CharCode.CR, _CharCode.LF];
+
+  static const List<int> _chunk0Length =
+      const [0x30, _CharCode.CR, _CharCode.LF, _CharCode.CR, _CharCode.LF];
+
+  final Completer<Socket> _doneCompleter = new Completer<Socket>();
+  final Socket socket;
+
+  bool ignoreBody = false;
+  bool headersWritten = false;
+
+  Uint8List _buffer;
+  int _length = 0;
+
+  Future _closeFuture;
+
+  bool chunked = false;
+  int _pendingChunkedFooter = 0;
+
+  int contentLength;
+  int _bytesWritten = 0;
+
+  bool _gzip = false;
+  ByteConversionSink _gzipSink;
+  // _gzipAdd is set iff the sink is being added to. It's used to specify where
+  // gzipped data should be taken (sometimes a controller, sometimes a socket).
+  _BytesConsumer _gzipAdd;
+  Uint8List _gzipBuffer;
+  int _gzipBufferLength = 0;
+
+  bool _socketError = false;
+
+  _HttpOutboundMessage outbound;
+
+  _HttpOutgoing(this.socket);
+
+  // Returns either a future or 'null', if it was able to write headers
+  // immediately.
+  Future writeHeaders({bool drainRequest: true, bool setOutgoing: true}) {
+    Future write() {
+      try {
+        outbound._writeHeader();
+      } catch (_) {
+        // Headers too large.
+        return new Future.error(new HttpException(
+            "Headers size exceeded the of '$_OUTGOING_BUFFER_SIZE'"
+            " bytes"));
+      }
+      return null;
+    }
+
+    if (headersWritten) return null;
+    headersWritten = true;
+    Future drainFuture;
+    bool gzip = false;
+    if (outbound is _HttpResponse) {
+      // Server side.
+      _HttpResponse response = outbound;
+      if (response._httpRequest._httpServer.autoCompress &&
+          outbound.bufferOutput &&
+          outbound.headers.chunkedTransferEncoding) {
+        List acceptEncodings =
+            response._httpRequest.headers[HttpHeaders.ACCEPT_ENCODING];
+        List contentEncoding = outbound.headers[HttpHeaders.CONTENT_ENCODING];
+        if (acceptEncodings != null &&
+            acceptEncodings
+                .expand((list) => list.split(","))
+                .any((encoding) => encoding.trim().toLowerCase() == "gzip") &&
+            contentEncoding == null) {
+          outbound.headers.set(HttpHeaders.CONTENT_ENCODING, "gzip");
+          gzip = true;
+        }
+      }
+      if (drainRequest && !response._httpRequest._incoming.hasSubscriber) {
+        drainFuture = response._httpRequest.drain().catchError((_) {});
+      }
+    } else {
+      drainRequest = false;
+    }
+    if (ignoreBody) {
+      return write();
+    }
+    if (setOutgoing) {
+      int contentLength = outbound.headers.contentLength;
+      if (outbound.headers.chunkedTransferEncoding) {
+        chunked = true;
+        if (gzip) this.gzip = true;
+      } else if (contentLength >= 0) {
+        this.contentLength = contentLength;
+      }
+    }
+    if (drainFuture != null) {
+      return drainFuture.then((_) => write());
+    }
+    return write();
+  }
+
+
+  Future addStream(Stream<List<int>> stream) {
+    if (_socketError) {
+      stream.listen(null).cancel();
+      return new Future.value(outbound);
+    }
+    if (ignoreBody) {
+      stream.drain().catchError((_) {});
+      var future = writeHeaders();
+      if (future != null) {
+        return future.then((_) => close());
+      }
+      return close();
+    }
+    StreamSubscription<List<int>> sub;
+    // Use new stream so we are able to pause (see below listen). The
+    // alternative is to use stream.extand, but that won't give us a way of
+    // pausing.
+    var controller = new StreamController<List<int>>(
+        onPause: () => sub.pause(),
+        onResume: () => sub.resume(),
+        sync: true);
+
+    void onData(List<int> data) {
+      if (_socketError) return;
+      if (data.length == 0) return;
+      if (chunked) {
+        if (_gzip) {
+          _gzipAdd = controller.add;
+          _addGZipChunk(data, _gzipSink.add);
+          _gzipAdd = null;
+          return;
+        }
+        _addChunk(_chunkHeader(data.length), controller.add);
+        _pendingChunkedFooter = 2;
+      } else {
+        if (contentLength != null) {
+          _bytesWritten += data.length;
+          if (_bytesWritten > contentLength) {
+            controller.addError(new HttpException(
+                "Content size exceeds specified contentLength. "
+                "$_bytesWritten bytes written while expected "
+                "$contentLength. "
+                "[${new String.fromCharCodes(data)}]"));
+            return;
+          }
+        }
+      }
+      _addChunk(data, controller.add);
+    }
+
+    sub = stream.listen(
+        onData,
+        onError: controller.addError,
+        onDone: controller.close,
+        cancelOnError: true);
+    // Write headers now that we are listening to the stream.
+    if (!headersWritten) {
+      var future = writeHeaders();
+      if (future != null) {
+        // While incoming is being drained, the pauseFuture is non-null. Pause
+        // output until it's drained.
+        sub.pause(future);
+      }
+    }
+    return socket.addStream(controller.stream)
+        .then((_) {
+          return outbound;
+        }, onError: (error, stackTrace) {
+          // Be sure to close it in case of an error.
+          if (_gzip) _gzipSink.close();
+          _socketError = true;
+          _doneCompleter.completeError(error, stackTrace);
+          if (_ignoreError(error)) {
+            return outbound;
+          } else {
+            throw error;
+          }
+        });
+  }
+
+  Future close() {
+    // If we are already closed, return that future.
+    if (_closeFuture != null) return _closeFuture;
+    // If we earlier saw an error, return immediate. The notification to
+    // _Http*Connection is already done.
+    if (_socketError) return new Future.value(outbound);
+    if (outbound._isConnectionClosed) return new Future.value(outbound);
+    if (!headersWritten && !ignoreBody) {
+      if (outbound.headers.contentLength == -1) {
+        // If no body was written, ignoreBody is false (it's not a HEAD
+        // request) and the content-length is unspecified, set contentLength to
+        // 0.
+        outbound.headers.chunkedTransferEncoding = false;
+        outbound.headers.contentLength = 0;
+      } else if (outbound.headers.contentLength > 0) {
+        var error = new HttpException(
+              "No content even though contentLength was specified to be "
+              "greater than 0: ${outbound.headers.contentLength}.",
+              uri: outbound._uri);
+        _doneCompleter.completeError(error);
+        return _closeFuture = new Future.error(error);
+      }
+    }
+    // If contentLength was specified, validate it.
+    if (contentLength != null) {
+      if (_bytesWritten < contentLength) {
+        var error = new HttpException(
+            "Content size below specified contentLength. "
+            " $_bytesWritten bytes written but expected "
+            "$contentLength.",
+            uri: outbound._uri);
+        _doneCompleter.completeError(error);
+        return _closeFuture = new Future.error(error);
+      }
+    }
+
+    Future finalize() {
+      // In case of chunked encoding (and gzip), handle remaining gzip data and
+      // append the 'footer' for chunked encoding.
+      if (chunked) {
+        if (_gzip) {
+          _gzipAdd = socket.add;
+          if (_gzipBufferLength > 0) {
+            _gzipSink.add(new Uint8List.view(
+                _gzipBuffer.buffer, 0, _gzipBufferLength));
+          }
+          _gzipBuffer = null;
+          _gzipSink.close();
+          _gzipAdd = null;
+        }
+        _addChunk(_chunkHeader(0), socket.add);
+      }
+      // Add any remaining data in the buffer.
+      if (_length > 0) {
+        socket.add(new Uint8List.view(_buffer.buffer, 0, _length));
+      }
+      // Clear references, for better GC.
+      _buffer = null;
+      // And finally flush it. As we support keep-alive, never close it from
+      // here. Once the socket is flushed, we'll be able to reuse it (signaled
+      // by the 'done' future).
+      return socket.flush()
+        .then((_) {
+          _doneCompleter.complete(socket);
+          return outbound;
+        }, onError: (error, stackTrace) {
+          _doneCompleter.completeError(error, stackTrace);
+          if (_ignoreError(error)) {
+            return outbound;
+          } else {
+            throw error;
+          }
+        });
+    }
+
+    var future = writeHeaders();
+    if (future != null) {
+      return _closeFuture = future.whenComplete(finalize);
+    }
+    return _closeFuture = finalize();
+  }
+
+  Future<Socket> get done => _doneCompleter.future;
+
+  void setHeader(List<int> data, int length) {
+    assert(_length == 0);
+    assert(data.length == _OUTGOING_BUFFER_SIZE);
+    _buffer = data;
+    _length = length;
+  }
+
+  void set gzip(bool value) {
+    _gzip = value;
+    if (_gzip) {
+      _gzipBuffer = new Uint8List(_OUTGOING_BUFFER_SIZE);
+      assert(_gzipSink == null);
+      _gzipSink = new ZLibEncoder(gzip: true)
+          .startChunkedConversion(
+              new _HttpGZipSink((data) {
+                // We are closing down prematurely, due to an error. Discard.
+                if (_gzipAdd == null) return;
+                _addChunk(_chunkHeader(data.length), _gzipAdd);
+                _pendingChunkedFooter = 2;
+                _addChunk(data, _gzipAdd);
+              }));
+    }
+  }
+
+  bool _ignoreError(error)
+    => (error is SocketException || error is TlsException) &&
+       outbound is HttpResponse;
+
+  void _addGZipChunk(List<int> chunk, void add(List<int> data)) {
+    if (!outbound.bufferOutput) {
+      add(chunk);
+      return;
+    }
+    if (chunk.length > _gzipBuffer.length - _gzipBufferLength) {
+      add(new Uint8List.view(
+          _gzipBuffer.buffer, 0, _gzipBufferLength));
+      _gzipBuffer = new Uint8List(_OUTGOING_BUFFER_SIZE);
+      _gzipBufferLength = 0;
+    }
+    if (chunk.length > _OUTGOING_BUFFER_SIZE) {
+      add(chunk);
+    } else {
+      _gzipBuffer.setRange(_gzipBufferLength,
+                           _gzipBufferLength + chunk.length,
+                           chunk);
+      _gzipBufferLength += chunk.length;
+    }
+  }
+
+  void _addChunk(List<int> chunk, void add(List<int> data)) {
+    if (!outbound.bufferOutput) {
+      if (_buffer != null) {
+        // If _buffer is not null, we have not written the header yet. Write
+        // it now.
+        add(new Uint8List.view(_buffer.buffer, 0, _length));
+        _buffer = null;
+        _length = 0;
+      }
+      add(chunk);
+      return;
+    }
+    if (chunk.length > _buffer.length - _length) {
+      add(new Uint8List.view(_buffer.buffer, 0, _length));
+      _buffer = new Uint8List(_OUTGOING_BUFFER_SIZE);
+      _length = 0;
+    }
+    if (chunk.length > _OUTGOING_BUFFER_SIZE) {
+      add(chunk);
+    } else {
+      _buffer.setRange(_length, _length + chunk.length, chunk);
+      _length += chunk.length;
+    }
   }
 
   List<int> _chunkHeader(int length) {
     const hexDigits = const [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
                              0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46];
     if (length == 0) {
-      if (_pendingFooter == 2) return _footerAndChunk0Length;
+      if (_pendingChunkedFooter == 2) return _footerAndChunk0Length;
       return _chunk0Length;
     }
-    int size = _pendingFooter;
+    int size = _pendingChunkedFooter;
     int len = length;
     // Compute a fast integer version of (log(length + 1) / log(16)).ceil().
     while (len > 0) {
@@ -1116,12 +1247,12 @@ class _ChunkedTransformerSink implements EventSink<List<int>> {
       len >>= 4;
     }
     var footerAndHeader = new Uint8List(size + 2);
-    if (_pendingFooter == 2) {
+    if (_pendingChunkedFooter == 2) {
       footerAndHeader[0] = _CharCode.CR;
       footerAndHeader[1] = _CharCode.LF;
     }
     int index = size;
-    while (index > _pendingFooter) {
+    while (index > _pendingChunkedFooter) {
       footerAndHeader[--index] = hexDigits[length & 15];
       length = length >> 4;
     }
@@ -1129,108 +1260,13 @@ class _ChunkedTransformerSink implements EventSink<List<int>> {
     footerAndHeader[size + 1] = _CharCode.LF;
     return footerAndHeader;
   }
-
-  static List<int> get _footerAndChunk0Length => new Uint8List.fromList(
-      const [_CharCode.CR, _CharCode.LF, 0x30, _CharCode.CR, _CharCode.LF,
-             _CharCode.CR, _CharCode.LF]);
-
-  static List<int> get _chunk0Length => new Uint8List.fromList(
-      const [0x30, _CharCode.CR, _CharCode.LF, _CharCode.CR, _CharCode.LF]);
-}
-
-// Transformer that transforms data to HTTP Chunked Encoding.
-class _ChunkedTransformer implements StreamTransformer<List<int>, List<int>> {
-  const _ChunkedTransformer();
-
-  Stream<List<int>> bind(Stream<List<int>> stream) {
-    return new Stream<List<int>>.eventTransformed(
-        stream,
-        (EventSink<List<int>> sink) => new _ChunkedTransformerSink(sink));
-  }
-}
-
-// Transformer that validates the content length.
-class _ContentLengthValidator
-    implements StreamTransformer<List<int>, List<int>>, EventSink<List<int>> {
-  final int expectedContentLength;
-  final Uri uri;
-  int _bytesWritten = 0;
-
-  EventSink<List<int>> _outSink;
-
-  _ContentLengthValidator(this.expectedContentLength, this.uri);
-
-  Stream<List<int>> bind(Stream<List<int>> stream) {
-    return new Stream.eventTransformed(
-        stream,
-        (EventSink sink) {
-          if (_outSink != null) {
-            throw new StateError("Validator transformer already used");
-          }
-          _outSink = sink;
-          return this;
-        });
-  }
-
-  void add(List<int> data) {
-    _bytesWritten += data.length;
-    if (_bytesWritten > expectedContentLength) {
-      _outSink.addError(new HttpException(
-          "Content size exceeds specified contentLength. "
-          "$_bytesWritten bytes written while expected "
-          "$expectedContentLength. "
-          "[${new String.fromCharCodes(data)}]",
-          uri: uri));
-      _outSink.close();
-    } else {
-      _outSink.add(data);
-    }
-  }
-
-  void addError(Object error, [StackTrace stackTrace]) {
-    _outSink.addError(error, stackTrace);
-  }
-
-  void close() {
-    if (_bytesWritten < expectedContentLength) {
-      _outSink.addError(new HttpException(
-          "Content size below specified contentLength. "
-          " $_bytesWritten bytes written while expected "
-          "$expectedContentLength.",
-          uri: uri));
-    }
-    _outSink.close();
-  }
-}
-
-
-// Extends StreamConsumer as this is an internal type, only used to pipe to.
-class _HttpOutgoing implements StreamConsumer<List<int>> {
-  final Completer _doneCompleter = new Completer();
-  final Socket socket;
-
-  _HttpOutgoing(this.socket);
-
-  Future addStream(Stream<List<int>> stream) {
-    return socket.addStream(stream)
-        .catchError((error) {
-          _doneCompleter.completeError(error);
-          throw error;
-        });
-  }
-
-  Future close() {
-    _doneCompleter.complete(socket);
-    return new Future.value();
-  }
-
-  Future get done => _doneCompleter.future;
 }
 
 class _HttpClientConnection {
   final String key;
   final Socket _socket;
   final bool _proxyTunnel;
+  final SecurityContext _context;
   final _HttpParser _httpParser;
   StreamSubscription _subscription;
   final _HttpClient _httpClient;
@@ -1238,15 +1274,14 @@ class _HttpClientConnection {
   Timer _idleTimer;
   bool closed = false;
   Uri _currentUri;
-  final Uint8List _headersBuffer = new Uint8List(_HEADERS_BUFFER_SIZE);
 
   Completer<_HttpIncoming> _nextResponseCompleter;
-  Future _streamFuture;
+  Future<Socket> _streamFuture;
 
   _HttpClientConnection(this.key, this._socket, this._httpClient,
-                        [this._proxyTunnel = false])
+                        [this._proxyTunnel = false, this._context])
       : _httpParser = new _HttpParser.responseParser() {
-    _socket.pipe(_httpParser);
+    _httpParser.listenToStream(_socket);
 
     // Set up handlers on the parser here, so we are sure to get 'onDone' from
     // the parser.
@@ -1257,10 +1292,28 @@ class _HttpClientConnection {
           _subscription.pause();
           // We assume the response is not here, until we have send the request.
           if (_nextResponseCompleter == null) {
-            throw new HttpException("Unexpected response.", uri: _currentUri);
+            throw new HttpException(
+                "Unexpected response (unsolicited response without request).",
+                uri: _currentUri);
           }
-          _nextResponseCompleter.complete(incoming);
-          _nextResponseCompleter = null;
+
+          // Check for status code '100 Continue'. In that case just
+          // consume that response as the final response will follow
+          // it. There is currently no API for the client to wait for
+          // the '100 Continue' response.
+          if (incoming.statusCode == 100) {
+            incoming.drain().then((_) {
+              _subscription.resume();
+            }).catchError((error, [StackTrace stackTrace]) {
+              _nextResponseCompleter.completeError(
+                  new HttpException(error.message, uri: _currentUri),
+                  stackTrace);
+              _nextResponseCompleter = null;
+            });
+          } else {
+            _nextResponseCompleter.complete(incoming);
+            _nextResponseCompleter = null;
+          }
         },
         onError: (error, [StackTrace stackTrace]) {
           if (_nextResponseCompleter != null) {
@@ -1299,8 +1352,11 @@ class _HttpClientConnection {
                                          proxy,
                                          _httpClient,
                                          this);
+    // For the Host header an IPv6 address must be enclosed in []'s.
+    var host = uri.host;
+    if (host.contains(':')) host = "[$host]";
     request.headers
-        ..host = uri.host
+        ..host = host
         ..port = port
         .._add(HttpHeaders.ACCEPT_ENCODING, "gzip");
     if (_httpClient.userAgent != null) {
@@ -1333,9 +1389,9 @@ class _HttpClientConnection {
     }
     // Start sending the request (lazy, delayed until the user provides
     // data).
-    _httpParser.responseToMethod = method;
+    _httpParser.isHead = method == "HEAD";
     _streamFuture = outgoing.done
-        .then((s) {
+        .then/*<Socket>*/((Socket s) {
           // Request sent, set up response completer.
           _nextResponseCompleter = new Completer();
 
@@ -1343,8 +1399,15 @@ class _HttpClientConnection {
           _nextResponseCompleter.future
               .then((incoming) {
                 _currentUri = null;
-                incoming.dataDone.then((_) {
-                  if (!_dispose &&
+                incoming.dataDone.then((closing) {
+                  if (incoming.upgraded) {
+                    _httpClient._connectionClosed(this);
+                    startTimer();
+                    return;
+                  }
+                  if (closed) return;
+                  if (!closing &&
+                      !_dispose &&
                       incoming.headers.persistentConnection &&
                       request.persistentConnection) {
                     // Return connection, now we are done.
@@ -1423,7 +1486,8 @@ class _HttpClientConnection {
         .then((_) => _socket.destroy());
   }
 
-  Future<_HttpClientConnection> createProxyTunnel(host, port, proxy, callback) {
+  Future<_HttpClientConnection> createProxyTunnel(String host, int port,
+      _Proxy proxy, bool callback(X509Certificate certificate)) {
     _HttpClientRequest request =
         send(new Uri(host: host, port: port),
              port,
@@ -1442,9 +1506,13 @@ class _HttpClientConnection {
             throw "Proxy failed to establish tunnel "
                   "(${response.statusCode} ${response.reasonPhrase})";
           }
-          var socket = response._httpRequest._httpClientConnection._socket;
+          var socket = (response as _HttpClientResponse)._httpRequest
+              ._httpClientConnection._socket;
           return SecureSocket.secure(
-              socket, host: host, onBadCertificate: callback);
+              socket,
+              host: host,
+              context: _context,
+              onBadCertificate: callback);
         })
         .then((secureSocket) {
           String key = _HttpClientConnection.makeKey(true, host, port);
@@ -1477,44 +1545,174 @@ class _HttpClientConnection {
   }
 }
 
-class _ConnnectionInfo {
+class _ConnectionInfo {
   final _HttpClientConnection connection;
   final _Proxy proxy;
 
-  _ConnnectionInfo(this.connection, this.proxy);
+  _ConnectionInfo(this.connection, this.proxy);
 }
 
 
-class _HttpClient implements HttpClient {
-  // TODO(ajohnsen): Use eviction timeout.
-  bool _closing = false;
+class _ConnectionTarget {
+  // Unique key for this connection target.
+  final String key;
+  final String host;
+  final int port;
+  final bool isSecure;
+  final SecurityContext context;
+  final Set<_HttpClientConnection> _idle = new HashSet();
+  final Set<_HttpClientConnection> _active = new HashSet();
+  final Queue _pending = new ListQueue();
+  int _connecting = 0;
 
-  final Map<String, Set<_HttpClientConnection>> _idleConnections
-      = new HashMap<String, Set<_HttpClientConnection>>();
-  final Set<_HttpClientConnection> _activeConnections
-      = new HashSet<_HttpClientConnection>();
+  _ConnectionTarget(this.key,
+                    this.host,
+                    this.port,
+                    this.isSecure,
+                    this.context);
+
+  bool get isEmpty => _idle.isEmpty && _active.isEmpty && _connecting == 0;
+
+  bool get hasIdle => _idle.isNotEmpty;
+
+  bool get hasActive => _active.isNotEmpty || _connecting > 0;
+
+  _HttpClientConnection takeIdle() {
+    assert(hasIdle);
+    _HttpClientConnection connection = _idle.first;
+    _idle.remove(connection);
+    connection.stopTimer();
+    _active.add(connection);
+    return connection;
+  }
+
+  _checkPending() {
+    if (_pending.isNotEmpty) {
+      _pending.removeFirst()();
+    }
+  }
+
+  void addNewActive(_HttpClientConnection connection) {
+    _active.add(connection);
+  }
+
+  void returnConnection(_HttpClientConnection connection) {
+    assert(_active.contains(connection));
+    _active.remove(connection);
+    _idle.add(connection);
+    connection.startTimer();
+    _checkPending();
+  }
+
+  void connectionClosed(_HttpClientConnection connection) {
+    assert(!_active.contains(connection) || !_idle.contains(connection));
+    _active.remove(connection);
+    _idle.remove(connection);
+    _checkPending();
+  }
+
+  void close(bool force) {
+    for (var c in _idle.toList()) {
+      c.close();
+    }
+    if (force) {
+      for (var c in _active.toList()) {
+        c.destroy();
+      }
+    }
+  }
+
+  Future<_ConnectionInfo> connect(String uriHost,
+                                  int uriPort,
+                                  _Proxy proxy,
+                                  _HttpClient client) {
+    if (hasIdle) {
+      var connection = takeIdle();
+      client._connectionsChanged();
+      return new Future.value(new _ConnectionInfo(connection, proxy));
+    }
+    if (client.maxConnectionsPerHost != null &&
+        _active.length + _connecting >= client.maxConnectionsPerHost) {
+      var completer = new Completer<_ConnectionInfo>();
+      _pending.add(() {
+        completer.complete(connect(uriHost, uriPort, proxy, client));
+      });
+      return completer.future;
+    }
+    var currentBadCertificateCallback = client._badCertificateCallback;
+
+    bool callback(X509Certificate certificate) {
+      if (currentBadCertificateCallback == null) return false;
+      return currentBadCertificateCallback(certificate, uriHost, uriPort);
+    }
+
+    Future socketFuture = (isSecure && proxy.isDirect
+        ? SecureSocket.connect(host,
+                               port,
+                               context: context,
+                               onBadCertificate: callback)
+        : Socket.connect(host, port));
+    _connecting++;
+    return socketFuture.then((socket) {
+        _connecting--;
+        socket.setOption(SocketOption.TCP_NODELAY, true);
+        var connection =
+            new _HttpClientConnection(key, socket, client, false, context);
+        if (isSecure && !proxy.isDirect) {
+          connection._dispose = true;
+          return connection.createProxyTunnel(uriHost, uriPort, proxy, callback)
+              .then((tunnel) {
+                client._getConnectionTarget(uriHost, uriPort, true)
+                    .addNewActive(tunnel);
+                return new _ConnectionInfo(tunnel, proxy);
+              });
+        } else {
+          addNewActive(connection);
+          return new _ConnectionInfo(connection, proxy);
+        }
+      }, onError: (error) {
+        _connecting--;
+        _checkPending();
+        throw error;
+      });
+  }
+}
+
+typedef bool BadCertificateCallback(X509Certificate cr, String host, int port);
+
+class _HttpClient implements HttpClient {
+  bool _closing = false;
+  bool _closingForcefully = false;
+  final Map<String, _ConnectionTarget> _connectionTargets
+      = new HashMap<String, _ConnectionTarget>();
   final List<_Credentials> _credentials = [];
   final List<_ProxyCredentials> _proxyCredentials = [];
+  final SecurityContext _context;
   Function _authenticate;
   Function _authenticateProxy;
   Function _findProxy = HttpClient.findProxyFromEnvironment;
   Duration _idleTimeout = const Duration(seconds: 15);
-  Function _badCertificateCallback;
-
-  Timer _noActiveTimer;
+  BadCertificateCallback _badCertificateCallback;
 
   Duration get idleTimeout => _idleTimeout;
 
+  int maxConnectionsPerHost;
+
+  bool autoUncompress = true;
+
   String userAgent = _getHttpVersion();
+
+  _HttpClient(SecurityContext this._context);
 
   void set idleTimeout(Duration timeout) {
     _idleTimeout = timeout;
-    _idleConnections.values.forEach(
-        (l) => l.forEach((c) {
-          // Reset timer. This is fine, as it's not happening often.
-          c.stopTimer();
-          c.startTimer();
-        }));
+    for (var c in _connectionTargets.values) {
+      for (var idle in c._idle) {
+        // Reset timer. This is fine, as it's not happening often.
+        idle.stopTimer();
+        idle.startTimer();
+      }
+    }
   }
 
   set badCertificateCallback(bool callback(X509Certificate cert,
@@ -1528,65 +1726,78 @@ class _HttpClient implements HttpClient {
                                  String host,
                                  int port,
                                  String path) {
-    // TODO(sgjesse): The path set here can contain both query and
-    // fragment. They should be cracked and set correctly.
-    return _openUrl(method, new Uri(
-        scheme: "http", host: host, port: port, path: path));
+    const int hashMark = 0x23;
+    const int questionMark = 0x3f;
+    int fragmentStart = path.length;
+    int queryStart = path.length;
+    for (int i = path.length - 1; i >= 0; i--) {
+      var char = path.codeUnitAt(i);
+      if (char == hashMark) {
+        fragmentStart = i;
+        queryStart = i;
+      } else if (char == questionMark) {
+        queryStart = i;
+      }
+    }
+    String query = null;
+    if (queryStart < fragmentStart) {
+      query = path.substring(queryStart + 1, fragmentStart);
+      path = path.substring(0, queryStart);
+    }
+    Uri uri = new Uri(scheme: "http", host: host, port: port,
+                      path: path, query: query);
+    return _openUrl(method, uri);
   }
 
-  Future<HttpClientRequest> openUrl(String method, Uri url) {
-    return _openUrl(method, url);
-  }
+  Future<HttpClientRequest> openUrl(String method, Uri url)
+      => _openUrl(method, url);
 
-  Future<HttpClientRequest> get(String host,
-                                int port,
-                                String path) {
-    return open("get", host, port, path);
-  }
+  Future<HttpClientRequest> get(String host, int port, String path)
+      => open("get", host, port, path);
 
-  Future<HttpClientRequest> getUrl(Uri url) {
-    return _openUrl("get", url);
-  }
+  Future<HttpClientRequest> getUrl(Uri url) => _openUrl("get", url);
 
-  Future<HttpClientRequest> post(String host,
-                                 int port,
-                                 String path) {
-    return open("post", host, port, path);
-  }
+  Future<HttpClientRequest> post(String host, int port, String path)
+      => open("post", host, port, path);
 
-  Future<HttpClientRequest> postUrl(Uri url) {
-    return _openUrl("post", url);
-  }
+  Future<HttpClientRequest> postUrl(Uri url) => _openUrl("post", url);
+
+  Future<HttpClientRequest> put(String host, int port, String path)
+      => open("put", host, port, path);
+
+  Future<HttpClientRequest> putUrl(Uri url) => _openUrl("put", url);
+
+  Future<HttpClientRequest> delete(String host, int port, String path)
+      => open("delete", host, port, path);
+
+  Future<HttpClientRequest> deleteUrl(Uri url) => _openUrl("delete", url);
+
+  Future<HttpClientRequest> head(String host, int port, String path)
+      => open("head", host, port, path);
+
+  Future<HttpClientRequest> headUrl(Uri url) => _openUrl("head", url);
+
+  Future<HttpClientRequest> patch(String host, int port, String path)
+      => open("patch", host, port, path);
+
+  Future<HttpClientRequest> patchUrl(Uri url) => _openUrl("patch", url);
 
   void close({bool force: false}) {
     _closing = true;
-    // Create flattened copy of _idleConnections, as 'destory' will manipulate
-    // it.
-    var idle = _idleConnections.values.fold(
-        [],
-        (l, e) {
-          l.addAll(e);
-          return l;
-        });
-    idle.forEach((e) {
-      e.close();
-    });
-    assert(_idleConnections.isEmpty);
-    if (force) {
-      for (var connection in _activeConnections.toList()) {
-        connection.destroy();
-      }
-      assert(_activeConnections.isEmpty);
-      _activeConnections.clear();
-    }
+    _closingForcefully = force;
+    _closeConnections(_closingForcefully);
+    assert(!_connectionTargets.values.any((s) => s.hasIdle));
+    assert(!force ||
+        !_connectionTargets.values.any((s) => s._active.isNotEmpty));
   }
 
   set authenticate(Future<bool> f(Uri url, String scheme, String realm)) {
     _authenticate = f;
   }
 
-  void addCredentials(Uri url, String realm, HttpClientCredentials cr) =>
-      _credentials.add(new _SiteCredentials(url, realm, cr));
+  void addCredentials(Uri url, String realm, HttpClientCredentials cr) {
+    _credentials.add(new _SiteCredentials(url, realm, cr));
+  }
 
   set authenticateProxy(
       Future<bool> f(String host, int port, String scheme, String realm)) {
@@ -1596,12 +1807,16 @@ class _HttpClient implements HttpClient {
   void addProxyCredentials(String host,
                            int port,
                            String realm,
-                           HttpClientCredentials cr) =>
-      _proxyCredentials.add(new _ProxyCredentials(host, port, realm, cr));
+                           HttpClientCredentials cr) {
+    _proxyCredentials.add(new _ProxyCredentials(host, port, realm, cr));
+  }
 
   set findProxy(String f(Uri uri)) => _findProxy = f;
 
-  Future<HttpClientRequest> _openUrl(String method, Uri uri) {
+  Future<_HttpClientRequest> _openUrl(String method, Uri uri) {
+    // Ignore any fragments on the request URI.
+    uri = uri.removeFragment();
+
     if (method == null) {
       throw new ArgumentError(method);
     }
@@ -1633,13 +1848,15 @@ class _HttpClient implements HttpClient {
       }
     }
     return _getConnection(uri.host, port, proxyConf, isSecure)
-        .then((info) {
-          send(info) {
+        .then((_ConnectionInfo info) {
+
+          _HttpClientRequest send(_ConnectionInfo info) {
             return info.connection.send(uri,
                                         port,
                                         method.toUpperCase(),
                                         info.proxy);
           }
+
           // If the connection was closed before the request was sent, create
           // and use another connection.
           if (info.connection.closed) {
@@ -1650,13 +1867,13 @@ class _HttpClient implements HttpClient {
         });
   }
 
-  Future<HttpClientRequest> _openUrlFromRequest(String method,
+  Future<_HttpClientRequest> _openUrlFromRequest(String method,
                                                 Uri uri,
                                                 _HttpClientRequest previous) {
     // If the new URI is relative (to either '/' or some sub-path),
     // construct a full URI from the previous one.
     Uri resolved = previous.uri.resolveUri(uri);
-    return openUrl(method, resolved).then((_HttpClientRequest request) {
+    return _openUrl(method, resolved).then((_HttpClientRequest request) {
 
           request
               // Only follow redirects if initial request did.
@@ -1677,114 +1894,77 @@ class _HttpClient implements HttpClient {
 
   // Return a live connection to the idle pool.
   void _returnConnection(_HttpClientConnection connection) {
-    _activeConnections.remove(connection);
-    if (_closing) {
-      connection.close();
-      return;
-    }
-    if (!_idleConnections.containsKey(connection.key)) {
-      _idleConnections[connection.key] = new HashSet();
-    }
-    _idleConnections[connection.key].add(connection);
-    connection.startTimer();
-    _updateTimers();
+    _connectionTargets[connection.key].returnConnection(connection);
+    _connectionsChanged();
   }
 
   // Remove a closed connnection from the active set.
   void _connectionClosed(_HttpClientConnection connection) {
     connection.stopTimer();
-    _activeConnections.remove(connection);
-    if (_idleConnections.containsKey(connection.key)) {
-      _idleConnections[connection.key].remove(connection);
-      if (_idleConnections[connection.key].isEmpty) {
-        _idleConnections.remove(connection.key);
+    var connectionTarget = _connectionTargets[connection.key];
+    if (connectionTarget != null) {
+      connectionTarget.connectionClosed(connection);
+      if (connectionTarget.isEmpty) {
+        _connectionTargets.remove(connection.key);
       }
-    }
-    _updateTimers();
-  }
-
-  void _updateTimers() {
-    if (_activeConnections.isEmpty) {
-      if (!_idleConnections.isEmpty && _noActiveTimer == null) {
-        _noActiveTimer = new Timer(const Duration(milliseconds: 100), () {
-          _noActiveTimer = null;
-          if (_activeConnections.isEmpty) {
-            close();
-            _closing = false;
-          }
-        });
-      }
-    } else if (_noActiveTimer != null) {
-      _noActiveTimer.cancel();
-      _noActiveTimer = null;
+      _connectionsChanged();
     }
   }
 
-  // Get a new _HttpClientConnection, either from the idle pool or created from
-  // a new Socket.
-  Future<_ConnnectionInfo> _getConnection(String uriHost,
+  void _connectionsChanged() {
+    if (_closing) {
+      _closeConnections(_closingForcefully);
+    }
+  }
+
+  void _closeConnections(bool force) {
+    for (var connectionTarget in _connectionTargets.values.toList()) {
+      connectionTarget.close(force);
+    }
+  }
+
+  _ConnectionTarget _getConnectionTarget(String host, int port, bool isSecure) {
+    String key = _HttpClientConnection.makeKey(isSecure, host, port);
+    return _connectionTargets.putIfAbsent(key, () {
+      return new _ConnectionTarget(key, host, port, isSecure, _context);
+    });
+  }
+
+  // Get a new _HttpClientConnection, from the matching _ConnectionTarget.
+  Future<_ConnectionInfo> _getConnection(String uriHost,
                                           int uriPort,
                                           _ProxyConfiguration proxyConf,
                                           bool isSecure) {
     Iterator<_Proxy> proxies = proxyConf.proxies.iterator;
 
-    Future<_ConnnectionInfo> connect(error) {
+    Future<_ConnectionInfo> connect(error) {
       if (!proxies.moveNext()) return new Future.error(error);
       _Proxy proxy = proxies.current;
       String host = proxy.isDirect ? uriHost: proxy.host;
       int port = proxy.isDirect ? uriPort: proxy.port;
-      String key = _HttpClientConnection.makeKey(isSecure, host, port);
-      if (_idleConnections.containsKey(key)) {
-        var connection = _idleConnections[key].first;
-        _idleConnections[key].remove(connection);
-        if (_idleConnections[key].isEmpty) {
-          _idleConnections.remove(key);
-        }
-        connection.stopTimer();
-        _activeConnections.add(connection);
-        _updateTimers();
-        return new Future.value(new _ConnnectionInfo(connection, proxy));
-      }
-      var currentBadCertificateCallback = _badCertificateCallback;
-      bool callback(X509Certificate certificate) =>
-          currentBadCertificateCallback == null ? false :
-          currentBadCertificateCallback(certificate, uriHost, uriPort);
-      Future socketFuture = (isSecure && proxy.isDirect
-          ? SecureSocket.connect(host,
-                                 port,
-                                 sendClientCertificate: true,
-                                 onBadCertificate: callback)
-          : Socket.connect(host, port));
-      return socketFuture.then((socket) {
-          socket.setOption(SocketOption.TCP_NODELAY, true);
-          var connection = new _HttpClientConnection(key, socket, this);
-          if (isSecure && !proxy.isDirect) {
-            connection._dispose = true;
-            return connection.createProxyTunnel(
-                uriHost, uriPort, proxy, callback)
-                .then((tunnel) {
-                  _activeConnections.add(tunnel);
-                  return new _ConnnectionInfo(tunnel, proxy);
-                });
-          } else {
-            _activeConnections.add(connection);
-            return new _ConnnectionInfo(connection, proxy);
-          }
-        }, onError: (error) {
-          // Continue with next proxy.
-          return connect(error);
-        });
+      return _getConnectionTarget(host, port, isSecure)
+          .connect(uriHost, uriPort, proxy, this)
+          // On error, continue with next proxy.
+          .catchError(connect);
     }
-    return connect(new HttpException("No proxies given"));
+    // Make sure we go through the event loop before taking a
+    // connection from the pool. For long-running synchronous code the
+    // server might have closed the connection, so this lowers the
+    // probability of getting a connection that was already closed.
+    return new Future<_ConnectionInfo>(
+        () => connect(new HttpException("No proxies given")));
   }
 
   _SiteCredentials _findCredentials(Uri url, [_AuthenticationScheme scheme]) {
     // Look for credentials.
     _SiteCredentials cr =
-        _credentials.fold(null, (prev, value) {
-          if (value.applies(url, scheme)) {
+        _credentials.fold(null, (_SiteCredentials prev, value) {
+          var siteCredentials = value as _SiteCredentials;
+          if (siteCredentials.applies(url, scheme)) {
             if (prev == null) return value;
-            return value.uri.path.length > prev.uri.path.length ? value : prev;
+            return siteCredentials.uri.path.length > prev.uri.path.length
+                ? siteCredentials
+                : prev;
           } else {
             return prev;
           }
@@ -1801,6 +1981,7 @@ class _HttpClient implements HttpClient {
         return it.current;
       }
     }
+    return null;
   }
 
   void _removeCredentials(_Credentials cr) {
@@ -1888,30 +2069,33 @@ class _HttpClient implements HttpClient {
 }
 
 
-class _HttpConnection extends LinkedListEntry<_HttpConnection> {
+class _HttpConnection
+    extends LinkedListEntry<_HttpConnection> with _ServiceObject {
   static const _ACTIVE = 0;
   static const _IDLE = 1;
   static const _CLOSING = 2;
   static const _DETACHED = 3;
 
-  int _state = _IDLE;
+  // Use HashMap, as we don't need to keep order.
+  static Map<int, _HttpConnection> _connections =
+      new HashMap<int, _HttpConnection>();
 
-  final Socket _socket;
+  final /*_ServerSocket*/ _socket;
   final _HttpServer _httpServer;
   final _HttpParser _httpParser;
+  int _state = _IDLE;
   StreamSubscription _subscription;
-  Timer _idleTimer;
-  final Uint8List _headersBuffer = new Uint8List(_HEADERS_BUFFER_SIZE);
-
+  bool _idleMark = false;
   Future _streamFuture;
 
   _HttpConnection(this._socket, this._httpServer)
       : _httpParser = new _HttpParser.requestParser() {
-    _startTimeout();
-    _socket.pipe(_httpParser);
+    try { _socket._owner = this; } catch (_) { print(_); }
+    _connections[_serviceId] = this;
+    _httpParser.listenToStream(_socket as Object/*=Socket*/);
     _subscription = _httpParser.listen(
         (incoming) {
-          _stopTimeout();
+          _httpServer._markActive(this);
           // If the incoming was closed, close the connection.
           incoming.dataDone.then((closing) {
             if (closing) destroy();
@@ -1924,6 +2108,7 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
           var response = new _HttpResponse(incoming.uri,
                                            incoming.headers.protocolVersion,
                                            outgoing,
+                                           _httpServer.defaultResponseHeaders,
                                            _httpServer.serverHeader);
           var request = new _HttpRequest(response, incoming, _httpServer, this);
           _streamFuture = outgoing.done
@@ -1936,7 +2121,8 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
                     !_httpParser.upgrade &&
                     !_httpServer.closed) {
                   _state = _IDLE;
-                  _startTimeout();
+                  _idleMark = false;
+                  _httpServer._markIdle(this);
                   // Resume the subscription for incoming requests as the
                   // request is now processed.
                   _subscription.resume();
@@ -1945,11 +2131,10 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
                   // received data was handled.
                   destroy();
                 }
-              })
-              .catchError((e) {
+              }, onError: (_) {
                 destroy();
               });
-          response._ignoreBody = request.method == "HEAD";
+          outgoing.ignoreBody = request.method == "HEAD";
           response._httpRequest = request;
           _httpServer._handleRequest(request);
         },
@@ -1962,29 +2147,21 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
         });
   }
 
-  void _startTimeout() {
-    assert(_state == _IDLE);
-    _stopTimeout();
-    if (_httpServer.idleTimeout == null) return;
-    _idleTimer = new Timer(_httpServer.idleTimeout, () {
-      destroy();
-    });
+  void markIdle() {
+    _idleMark = true;
   }
 
-  void _stopTimeout() {
-    if (_idleTimer != null) _idleTimer.cancel();
-  }
+  bool get isMarkedIdle => _idleMark;
 
   void destroy() {
-    _stopTimeout();
     if (_state == _CLOSING || _state == _DETACHED) return;
     _state = _CLOSING;
     _socket.destroy();
     _httpServer._connectionClosed(this);
+    _connections.remove(_serviceId);
   }
 
   Future<Socket> detachSocket() {
-    _stopTimeout();
     _state = _DETACHED;
     // Remove connection from server.
     _httpServer._connectionClosed(this);
@@ -1992,6 +2169,7 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
     _HttpDetachedIncoming detachedIncoming = _httpParser.detachIncoming();
 
     return _streamFuture.then((_) {
+      _connections.remove(_serviceId);
       return new _DetachedSocket(_socket, detachedIncoming);
     });
   }
@@ -2002,45 +2180,132 @@ class _HttpConnection extends LinkedListEntry<_HttpConnection> {
   bool get _isIdle => _state == _IDLE;
   bool get _isClosing => _state == _CLOSING;
   bool get _isDetached => _state == _DETACHED;
+
+  String get _serviceTypePath => 'io/http/serverconnections';
+  String get _serviceTypeName => 'HttpServerConnection';
+
+  Map _toJSON(bool ref) {
+    var name = "${_socket.address.host}:${_socket.port} <-> "
+        "${_socket.remoteAddress.host}:${_socket.remotePort}";
+    var r = <String, dynamic>{
+      'id': _servicePath,
+      'type': _serviceType(ref),
+      'name': name,
+      'user_name': name,
+    };
+    if (ref) {
+      return r;
+    }
+    r['server'] = _httpServer._toJSON(true);
+    try {
+      r['socket'] = _socket._toJSON(true);
+    } catch (_) {
+      r['socket'] = {
+        'id': _servicePath,
+        'type': '@Socket',
+        'name': 'UserSocket',
+        'user_name': 'UserSocket',
+      };
+    }
+    switch (_state) {
+      case _ACTIVE: r['state'] = "Active"; break;
+      case _IDLE: r['state'] = "Idle"; break;
+      case _CLOSING: r['state'] = "Closing"; break;
+      case _DETACHED: r['state'] = "Detached"; break;
+      default: r['state'] = 'Unknown'; break;
+    }
+    return r;
+  }
 }
 
 
 // HTTP server waiting for socket connections.
-class _HttpServer extends Stream<HttpRequest> implements HttpServer {
-  String serverHeader = _getHttpVersion();
+class _HttpServer
+    extends Stream<HttpRequest> with _ServiceObject
+    implements HttpServer {
+  // Use default Map so we keep order.
+  static Map<int, _HttpServer> _servers = new Map<int, _HttpServer>();
 
-  Duration idleTimeout = const Duration(seconds: 120);
+  String serverHeader;
+  final HttpHeaders defaultResponseHeaders = _initDefaultResponseHeaders();
+  bool autoCompress = false;
 
-  static Future<HttpServer> bind(address, int port, int backlog) {
-    return ServerSocket.bind(address, port, backlog: backlog).then((socket) {
-      return new _HttpServer._(socket, true);
-    });
+  Duration _idleTimeout;
+  Timer _idleTimer;
+
+  static Future<HttpServer> bind(
+      address, int port, int backlog, bool v6Only, bool shared) {
+    return ServerSocket.bind(
+        address, port, backlog: backlog, v6Only: v6Only, shared: shared)
+            .then((socket) {
+              return new _HttpServer._(socket, true);
+            });
   }
 
   static Future<HttpServer> bindSecure(address,
                                        int port,
+                                       SecurityContext context,
                                        int backlog,
-                                       String certificate_name,
-                                       bool requestClientCertificate) {
+                                       bool v6Only,
+                                       bool requestClientCertificate,
+                                       bool shared) {
     return SecureServerSocket.bind(
         address,
         port,
-        certificate_name,
+        context,
         backlog: backlog,
-        requestClientCertificate: requestClientCertificate)
-        .then((socket) {
-          return new _HttpServer._(socket, true);
-        });
+        v6Only: v6Only,
+        requestClientCertificate: requestClientCertificate,
+        shared: shared)
+            .then((socket) {
+              return new _HttpServer._(socket, true);
+            });
   }
 
   _HttpServer._(this._serverSocket, this._closeServer) {
     _controller = new StreamController<HttpRequest>(sync: true,
                                                     onCancel: close);
+    idleTimeout = const Duration(seconds: 120);
+    _servers[_serviceId] = this;
+    _serverSocket._owner = this;
   }
 
   _HttpServer.listenOn(this._serverSocket) : _closeServer = false {
     _controller = new StreamController<HttpRequest>(sync: true,
                                                     onCancel: close);
+    idleTimeout = const Duration(seconds: 120);
+    _servers[_serviceId] = this;
+    try { _serverSocket._owner = this; } catch (_) {}
+  }
+
+  static HttpHeaders _initDefaultResponseHeaders() {
+    var defaultResponseHeaders = new _HttpHeaders('1.1');
+    defaultResponseHeaders.contentType = ContentType.TEXT;
+    defaultResponseHeaders.set('X-Frame-Options', 'SAMEORIGIN');
+    defaultResponseHeaders.set('X-Content-Type-Options', 'nosniff');
+    defaultResponseHeaders.set('X-XSS-Protection', '1; mode=block');
+    return defaultResponseHeaders;
+  }
+
+  Duration get idleTimeout => _idleTimeout;
+
+  void set idleTimeout(Duration duration) {
+    if (_idleTimer != null) {
+      _idleTimer.cancel();
+      _idleTimer = null;
+    }
+    _idleTimeout = duration;
+    if (_idleTimeout != null) {
+      _idleTimer = new Timer.periodic(_idleTimeout, (_) {
+        for (var idle in _idleConnections.toList()) {
+          if (idle.isMarkedIdle) {
+            idle.destroy();
+          } else {
+            idle.markIdle();
+          }
+        }
+      });
+    }
   }
 
   StreamSubscription<HttpRequest> listen(void onData(HttpRequest event),
@@ -2052,13 +2317,13 @@ class _HttpServer extends Stream<HttpRequest> implements HttpServer {
           socket.setOption(SocketOption.TCP_NODELAY, true);
           // Accept the client connection.
           _HttpConnection connection = new _HttpConnection(socket, this);
-          _connections.add(connection);
+          _idleConnections.add(connection);
         },
-        onError: (error) {
+        onError: (error, stackTrace) {
           // Ignore HandshakeExceptions as they are bound to a single request,
           // and are not fatal for the server.
           if (error is! HandshakeException) {
-            _controller.addError(error);
+            _controller.addError(error, stackTrace);
           }
         },
         onDone: _controller.close);
@@ -2076,26 +2341,28 @@ class _HttpServer extends Stream<HttpRequest> implements HttpServer {
     } else {
       result = new Future.value();
     }
+    idleTimeout = null;
     if (force) {
-      for (var c in _connections.toList()) {
+      for (var c in _activeConnections.toList()) {
         c.destroy();
       }
-      assert(_connections.isEmpty);
-    } else {
-      for (var c in _connections.where((c) => c._isIdle).toList()) {
-        c.destroy();
-      }
+      assert(_activeConnections.isEmpty);
     }
-    _maybeCloseSessionManager();
+    for (var c in _idleConnections.toList()) {
+      c.destroy();
+    }
+    _maybePerformCleanup();
     return result;
   }
 
-  void _maybeCloseSessionManager() {
+  void _maybePerformCleanup() {
     if (closed &&
-        _connections.isEmpty &&
+        _idleConnections.isEmpty &&
+        _activeConnections.isEmpty &&
         _sessionManagerInstance != null) {
       _sessionManagerInstance.close();
       _sessionManagerInstance = null;
+      _servers.remove(_serviceId);
     }
   }
 
@@ -2113,15 +2380,28 @@ class _HttpServer extends Stream<HttpRequest> implements HttpServer {
     _sessionManager.sessionTimeout = timeout;
   }
 
-  void _handleRequest(HttpRequest request) => _controller.add(request);
-
-  void _handleError(error) {
-    if (!closed) _controller.addError(error);
+  void _handleRequest(_HttpRequest request) {
+    if (!closed) {
+      _controller.add(request);
+    } else {
+      request._httpConnection.destroy();
+    }
   }
 
   void _connectionClosed(_HttpConnection connection) {
-    _connections.remove(connection);
-    _maybeCloseSessionManager();
+    // Remove itself from either idle or active connections.
+    connection.unlink();
+    _maybePerformCleanup();
+  }
+
+  void _markIdle(_HttpConnection connection) {
+    _activeConnections.remove(connection);
+    _idleConnections.add(connection);
+  }
+
+  void _markActive(_HttpConnection connection) {
+    _idleConnections.remove(connection);
+    _activeConnections.add(connection);
   }
 
   _HttpSessionManager get _sessionManager {
@@ -2134,18 +2414,51 @@ class _HttpServer extends Stream<HttpRequest> implements HttpServer {
 
   HttpConnectionsInfo connectionsInfo() {
     HttpConnectionsInfo result = new HttpConnectionsInfo();
-    result.total = _connections.length;
-    _connections.forEach((_HttpConnection conn) {
+    result.total = _activeConnections.length + _idleConnections.length;
+    _activeConnections.forEach((_HttpConnection conn) {
       if (conn._isActive) {
         result.active++;
-      } else if (conn._isIdle) {
-        result.idle++;
       } else {
         assert(conn._isClosing);
         result.closing++;
       }
     });
+    _idleConnections.forEach((_HttpConnection conn) {
+      result.idle++;
+      assert(conn._isIdle);
+    });
     return result;
+  }
+
+  String get _serviceTypePath => 'io/http/servers';
+  String get _serviceTypeName => 'HttpServer';
+
+  Map<String, dynamic> _toJSON(bool ref) {
+    var r = <String, dynamic>{
+      'id': _servicePath,
+      'type': _serviceType(ref),
+      'name': '${address.host}:$port',
+      'user_name': '${address.host}:$port',
+    };
+    if (ref) {
+      return r;
+    }
+    try {
+      r['socket'] = _serverSocket._toJSON(true);
+    } catch (_) {
+      r['socket'] = {
+        'id': _servicePath,
+        'type': '@Socket',
+        'name': 'UserSocket',
+        'user_name': 'UserSocket',
+      };
+    }
+    r['port'] = port;
+    r['address'] = address.host;
+    r['active'] = _activeConnections.map((c) => c._toJSON(true)).toList();
+    r['idle'] = _idleConnections.map((c) => c._toJSON(true)).toList();
+    r['closed'] = closed;
+    return r;
   }
 
   _HttpSessionManager _sessionManagerInstance;
@@ -2155,14 +2468,15 @@ class _HttpServer extends Stream<HttpRequest> implements HttpServer {
 
   // The server listen socket. Untyped as it can be both ServerSocket and
   // SecureServerSocket.
-  final _serverSocket;
+  final dynamic/*ServerSocket|SecureServerSocket*/ _serverSocket;
   final bool _closeServer;
 
   // Set of currently connected clients.
-  final LinkedList<_HttpConnection> _connections
+  final LinkedList<_HttpConnection> _activeConnections
+      = new LinkedList<_HttpConnection>();
+  final LinkedList<_HttpConnection> _idleConnections
       = new LinkedList<_HttpConnection>();
   StreamController<HttpRequest> _controller;
-  // TODO(ajohnsen): Use close queue?
 }
 
 
@@ -2289,30 +2603,30 @@ class _DetachedSocket extends Stream<List<int>> implements Socket {
     _socket.encoding = value;
   }
 
-  void write(Object obj) => _socket.write(obj);
+  void write(Object obj) { _socket.write(obj); }
 
-  void writeln([Object obj = ""]) => _socket.writeln(obj);
+  void writeln([Object obj = ""]) { _socket.writeln(obj); }
 
-  void writeCharCode(int charCode) => _socket.writeCharCode(charCode);
+  void writeCharCode(int charCode) { _socket.writeCharCode(charCode); }
 
   void writeAll(Iterable objects, [String separator = ""]) {
     _socket.writeAll(objects, separator);
   }
 
-  void add(List<int> bytes) => _socket.add(bytes);
+  void add(List<int> bytes) { _socket.add(bytes); }
 
   void addError(error, [StackTrace stackTrace]) =>
       _socket.addError(error, stackTrace);
 
-  Future<Socket> addStream(Stream<List<int>> stream) {
+  Future addStream(Stream<List<int>> stream) {
     return _socket.addStream(stream);
   }
 
-  void destroy() => _socket.destroy();
+  void destroy() { _socket.destroy(); }
 
   Future flush() => _socket.flush();
 
-  Future close() => _socket.close();
+  Future<Socket> close() => _socket.close();
 
   Future<Socket> get done => _socket.done;
 
@@ -2326,6 +2640,13 @@ class _DetachedSocket extends Stream<List<int>> implements Socket {
 
   bool setOption(SocketOption option, bool enabled) {
     return _socket.setOption(option, enabled);
+  }
+
+  Map _toJSON(bool ref) {
+    return (_socket as dynamic)._toJSON(ref);
+  }
+  void set _owner(owner) {
+    (_socket as dynamic)._owner = owner;
   }
 }
 
@@ -2474,11 +2795,13 @@ class _HttpClientBasicCredentials
     return "Basic $auth";
   }
 
-  void authorize(_Credentials _, HttpClientRequest request) =>
-      request.headers.set(HttpHeaders.AUTHORIZATION, authorization());
+  void authorize(_Credentials _, HttpClientRequest request) {
+    request.headers.set(HttpHeaders.AUTHORIZATION, authorization());
+  }
 
-  void authorizeProxy(_ProxyCredentials _, HttpClientRequest request) =>
-      request.headers.set(HttpHeaders.PROXY_AUTHORIZATION, authorization());
+  void authorizeProxy(_ProxyCredentials _, HttpClientRequest request) {
+    request.headers.set(HttpHeaders.PROXY_AUTHORIZATION, authorization());
+  }
 }
 
 

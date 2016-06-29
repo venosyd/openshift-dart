@@ -18,11 +18,13 @@ class _Directory extends FileSystemEntity implements Directory {
   external static _setCurrent(path);
   external static _createTemp(String path);
   external static String _systemTemp();
-  external static int _exists(String path);
+  external static _exists(String path);
   external static _create(String path);
   external static _deleteNative(String path, bool recursive);
   external static _rename(String path, String newPath);
-  external static List _list(String path, bool recursive, bool followLinks);
+  external static void _fillWithDirectoryListing(
+      List<FileSystemEntity> list, String path, bool recursive,
+      bool followLinks);
 
   static Directory get current {
     var result = _current();
@@ -43,8 +45,12 @@ class _Directory extends FileSystemEntity implements Directory {
     }
   }
 
+  Uri get uri {
+    return new Uri.directory(path);
+  }
+
   Future<bool> exists() {
-    return _IOService.dispatch(_DIRECTORY_EXISTS, [path]).then((response) {
+    return _IOService._dispatch(_DIRECTORY_EXISTS, [path]).then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionOrErrorFromResponse(response, "Exists failed");
       }
@@ -66,30 +72,6 @@ class _Directory extends FileSystemEntity implements Directory {
 
   FileStat statSync() => FileStat.statSync(path);
 
-  // Compute the index of the first directory in the list that exists. If
-  // none of the directories exist dirsToCreate.length is returned.
-  Future<int> _computeExistingIndex(List dirsToCreate) {
-    var future;
-    var notFound = dirsToCreate.length;
-    for (var i = 0; i < dirsToCreate.length; i++) {
-      if (future == null) {
-        future = dirsToCreate[i].exists().then((e) => e ? i : notFound);
-      } else {
-        future = future.then((index) {
-          if (index != notFound) {
-            return new Future.value(index);
-          }
-          return dirsToCreate[i].exists().then((e) => e ? i : notFound);
-        });
-      }
-    }
-    if (future == null) {
-      return new Future.value(notFound);
-    } else {
-      return future;
-    }
-  }
-
   Future<Directory> create({bool recursive: false}) {
     if (recursive) {
       return exists().then((exists) {
@@ -103,7 +85,7 @@ class _Directory extends FileSystemEntity implements Directory {
         }
       });
     } else {
-      return _IOService.dispatch(_DIRECTORY_CREATE, [path]).then((response) {
+      return _IOService._dispatch(_DIRECTORY_CREATE, [path]).then((response) {
         if (_isErrorResponse(response)) {
           throw _exceptionOrErrorFromResponse(response, "Creation failed");
         }
@@ -140,7 +122,7 @@ class _Directory extends FileSystemEntity implements Directory {
     } else {
       fullPrefix = "$path${Platform.pathSeparator}$prefix";
     }
-    return _IOService.dispatch(_DIRECTORY_CREATE_TEMP, [fullPrefix])
+    return _IOService._dispatch(_DIRECTORY_CREATE_TEMP, [fullPrefix])
         .then((response) {
       if (_isErrorResponse(response)) {
         throw _exceptionOrErrorFromResponse(
@@ -173,7 +155,7 @@ class _Directory extends FileSystemEntity implements Directory {
   }
 
   Future<Directory> _delete({bool recursive: false}) {
-    return _IOService.dispatch(_DIRECTORY_DELETE, [path, recursive])
+    return _IOService._dispatch(_DIRECTORY_DELETE, [path, recursive])
         .then((response) {
           if (_isErrorResponse(response)) {
             throw _exceptionOrErrorFromResponse(response, "Deletion failed");
@@ -190,7 +172,7 @@ class _Directory extends FileSystemEntity implements Directory {
   }
 
   Future<Directory> rename(String newPath) {
-    return _IOService.dispatch(_DIRECTORY_RENAME, [path, newPath])
+    return _IOService._dispatch(_DIRECTORY_RENAME, [path, newPath])
         .then((response) {
           if (_isErrorResponse(response)) {
             throw _exceptionOrErrorFromResponse(response, "Rename failed");
@@ -218,14 +200,18 @@ class _Directory extends FileSystemEntity implements Directory {
         followLinks).stream;
   }
 
-  List listSync({bool recursive: false, bool followLinks: true}) {
+  List<FileSystemEntity> listSync(
+      {bool recursive: false, bool followLinks: true}) {
     if (recursive is! bool || followLinks is! bool) {
       throw new ArgumentError();
     }
-    return _list(
+    var result = <FileSystemEntity>[];
+    _fillWithDirectoryListing(
+        result,
         FileSystemEntity._ensureTrailingPathSeparators(path),
         recursive,
         followLinks);
+    return result;
   }
 
   String toString() => "Directory: '$path'";
@@ -248,6 +234,12 @@ class _Directory extends FileSystemEntity implements Directory {
   }
 }
 
+abstract class _AsyncDirectoryListerOps {
+  external factory _AsyncDirectoryListerOps(int pointer);
+
+  int getPointer();
+}
+
 class _AsyncDirectoryLister {
   static const int LIST_FILE = 0;
   static const int LIST_DIRECTORY = 1;
@@ -264,28 +256,39 @@ class _AsyncDirectoryLister {
   final bool recursive;
   final bool followLinks;
 
-  StreamController controller;
-  int id;
+  StreamController<FileSystemEntity> controller;
   bool canceled = false;
   bool nextRunning = false;
   bool closed = false;
+  _AsyncDirectoryListerOps _ops;
   Completer closeCompleter = new Completer();
 
   _AsyncDirectoryLister(this.path, this.recursive, this.followLinks) {
-    controller = new StreamController(onListen: onListen,
-                                      onResume: onResume,
-                                      onCancel: onCancel,
-                                      sync: true);
+    controller = new StreamController<FileSystemEntity>(onListen: onListen,
+                                                        onResume: onResume,
+                                                        onCancel: onCancel,
+                                                        sync: true);
   }
 
-  Stream get stream => controller.stream;
+  // Calling this function will increase the reference count on the native
+  // object that implements the async directory lister operations. It should
+  // only be called to pass the pointer to the IO Service, which will decrement
+  // the reference count when it is finished with it.
+  int _pointer() {
+    return (_ops == null) ? null : _ops.getPointer();
+  }
+
+  Stream<FileSystemEntity> get stream => controller.stream;
 
   void onListen() {
-    _IOService.dispatch(_DIRECTORY_LIST_START, [path, recursive, followLinks])
+    _IOService._dispatch(_DIRECTORY_LIST_START, [path, recursive, followLinks])
         .then((response) {
           if (response is int) {
-            id = response;
+            _ops = new _AsyncDirectoryListerOps(response);
             next();
+          } else if (response is Error) {
+            controller.addError(response, response.stackTrace);
+            close();
           } else {
             error(response);
             close();
@@ -294,7 +297,9 @@ class _AsyncDirectoryLister {
   }
 
   void onResume() {
-    if (!nextRunning) next();
+    if (!nextRunning) {
+      next();
+    }
   }
 
   Future onCancel() {
@@ -312,11 +317,15 @@ class _AsyncDirectoryLister {
       close();
       return;
     }
-    if (id == null) return;
-    if (controller.isPaused) return;
-    if (nextRunning) return;
+    if (controller.isPaused || nextRunning) {
+      return;
+    }
+    var pointer = _pointer();
+    if (pointer == null) {
+      return;
+    }
     nextRunning = true;
-    _IOService.dispatch(_DIRECTORY_LIST_NEXT, [id]).then((result) {
+    _IOService._dispatch(_DIRECTORY_LIST_NEXT, [pointer]).then((result) {
       nextRunning = false;
       if (result is List) {
         next();
@@ -347,18 +356,27 @@ class _AsyncDirectoryLister {
     });
   }
 
+  void _cleanup() {
+    controller.close();
+    closeCompleter.complete();
+    _ops = null;
+  }
+
   void close() {
-    if (closed) return;
-    if (nextRunning) return;
-    void cleanup() {
-      controller.close();
-      closeCompleter.complete();
+    if (closed) {
+      return;
+    }
+    if (nextRunning) {
+      return;
     }
     closed = true;
-    if (id != null) {
-      _IOService.dispatch(_DIRECTORY_LIST_STOP, [id]).whenComplete(cleanup);
+
+    var pointer = _pointer();
+    if (pointer == null) {
+      _cleanup();
     } else {
-      cleanup();
+      _IOService._dispatch(_DIRECTORY_LIST_STOP, [pointer])
+                .whenComplete(_cleanup);
     }
   }
 
@@ -376,8 +394,8 @@ class _AsyncDirectoryLister {
       if (errorPath == null) errorPath = path;
       controller.addError(
           new FileSystemException("Directory listing failed",
-                                 errorPath,
-                                 err));
+                                  errorPath,
+                                  err));
     } else {
       controller.addError(
           new FileSystemException("Internal error"));

@@ -9,26 +9,22 @@ _invokeErrorHandler(Function errorHandler,
   if (errorHandler is ZoneBinaryCallback) {
     return errorHandler(error, stackTrace);
   } else {
-    return errorHandler(error);
+    ZoneUnaryCallback unaryErrorHandler = errorHandler;
+    return unaryErrorHandler(error);
   }
 }
 
-Function _registerErrorHandler(Function errorHandler, Zone zone) {
+Function _registerErrorHandler/*<R>*/(Function errorHandler, Zone zone) {
   if (errorHandler is ZoneBinaryCallback) {
-    return zone.registerBinaryCallback(errorHandler);
+    return zone.registerBinaryCallback/*<R, dynamic, StackTrace>*/(
+        errorHandler as dynamic/*=ZoneBinaryCallback<R, dynamic, StackTrace>*/);
   } else {
-    return zone.registerUnaryCallback(errorHandler);
+    return zone.registerUnaryCallback/*<R, dynamic>*/(
+        errorHandler as dynamic/*=ZoneUnaryCallback<R, dynamic>*/);
   }
 }
 
-class _AsyncError implements Error {
-  final error;
-  final StackTrace stackTrace;
-
-  _AsyncError(this.error, this.stackTrace);
-}
-
-class _UncaughtAsyncError extends _AsyncError {
+class _UncaughtAsyncError extends AsyncError {
   _UncaughtAsyncError(error, StackTrace stackTrace)
       : super(error, _getBestStackTrace(error, stackTrace));
 

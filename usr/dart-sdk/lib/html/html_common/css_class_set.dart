@@ -6,6 +6,13 @@ part of html_common;
 
 abstract class CssClassSetImpl implements CssClassSet {
 
+  static final RegExp _validTokenRE = new RegExp(r'^\S+$');
+
+  String _validateToken(String value) {
+    if (_validTokenRE.hasMatch(value)) return value;
+    throw new ArgumentError.value(value, 'value', 'Not a valid class token');
+  }
+
   String toString() {
     return readClasses().join(' ');
   }
@@ -18,6 +25,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    * [shouldAdd] is false then we always remove [value] from the element.
    */
   bool toggle(String value, [bool shouldAdd]) {
+    _validateToken(value);
     Set<String> s = readClasses();
     bool result = false;
     if (shouldAdd == null) shouldAdd = !s.contains(value);
@@ -48,11 +56,13 @@ abstract class CssClassSetImpl implements CssClassSet {
 
   String join([String separator = ""]) => readClasses().join(separator);
 
-  Iterable map(f(String element)) => readClasses().map(f);
+  Iterable/*<T>*/ map/*<T>*/(/*=T*/ f(String e)) =>
+      readClasses().map/*<T>*/(f);
 
   Iterable<String> where(bool f(String element)) => readClasses().where(f);
 
-  Iterable expand(Iterable f(String element)) => readClasses().expand(f);
+  Iterable/*<T>*/ expand/*<T>*/(Iterable/*<T>*/ f(String element)) =>
+      readClasses().expand/*<T>*/(f);
 
   bool every(bool f(String element)) => readClasses().every(f);
 
@@ -68,10 +78,11 @@ abstract class CssClassSetImpl implements CssClassSet {
     return readClasses().reduce(combine);
   }
 
-  dynamic fold(dynamic initialValue,
-      dynamic combine(dynamic previousValue, String element)) {
-    return readClasses().fold(initialValue, combine);
+  dynamic/*=T*/ fold/*<T>*/(var/*=T*/ initialValue,
+      dynamic/*=T*/ combine(var/*=T*/ previousValue, String element)) {
+    return readClasses().fold/*<T>*/(initialValue, combine);
   }
+
   // interface Collection - END
 
   // interface Set - BEGIN
@@ -81,10 +92,14 @@ abstract class CssClassSetImpl implements CssClassSet {
    * This is the Dart equivalent of jQuery's
    * [hasClass](http://api.jquery.com/hasClass/).
    */
-  bool contains(String value) => readClasses().contains(value);
+  bool contains(Object value) {
+    if (value is! String) return false;
+    _validateToken(value);
+    return readClasses().contains(value);
+  }
 
   /** Lookup from the Set interface. Not interesting for a String set. */
-  String lookup(String value) => contains(value) ? value : null;
+  String lookup(Object value) => contains(value) ? value : null;
 
   /**
    * Add the class [value] to element.
@@ -93,6 +108,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    * [addClass](http://api.jquery.com/addClass/).
    */
   bool add(String value) {
+    _validateToken(value);
     // TODO - figure out if we need to do any validation here
     // or if the browser natively does enough.
     return modify((s) => s.add(value));
@@ -106,6 +122,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    * [removeClass](http://api.jquery.com/removeClass/).
    */
   bool remove(Object value) {
+    _validateToken(value);
     if (value is! String) return false;
     Set<String> s = readClasses();
     bool result = s.remove(value);
@@ -121,7 +138,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    */
   void addAll(Iterable<String> iterable) {
     // TODO - see comment above about validation.
-    modify((s) => s.addAll(iterable));
+    modify((s) => s.addAll(iterable.map(_validateToken)));
   }
 
   /**
@@ -130,7 +147,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    * This is the Dart equivalent of jQuery's
    * [removeClass](http://api.jquery.com/removeClass/).
    */
-  void removeAll(Iterable<String> iterable) {
+  void removeAll(Iterable<Object> iterable) {
     modify((s) => s.removeAll(iterable));
   }
 
@@ -148,7 +165,7 @@ abstract class CssClassSetImpl implements CssClassSet {
     iterable.forEach((e) => toggle(e, shouldAdd));
   }
 
-  void retainAll(Iterable<String> iterable) {
+  void retainAll(Iterable<Object> iterable) {
     modify((s) => s.retainAll(iterable));
   }
 
@@ -160,16 +177,16 @@ abstract class CssClassSetImpl implements CssClassSet {
     modify((s) => s.retainWhere(test));
   }
 
-  bool containsAll(Iterable<String> collection) =>
+  bool containsAll(Iterable<Object> collection) =>
     readClasses().containsAll(collection);
 
-  Set<String> intersection(Set<String> other) =>
+  Set<String> intersection(Set<Object> other) =>
     readClasses().intersection(other);
 
   Set<String> union(Set<String> other) =>
     readClasses().union(other);
 
-  Set<String> difference(Set<String> other) =>
+  Set<String> difference(Set<Object> other) =>
     readClasses().difference(other);
 
   String get first => readClasses().first;
@@ -184,15 +201,16 @@ abstract class CssClassSetImpl implements CssClassSet {
   Iterable<String> skip(int n) => readClasses().skip(n);
   Iterable<String> skipWhile(bool test(String value)) =>
       readClasses().skipWhile(test);
-  dynamic firstWhere(bool test(String value), { Object orElse() }) =>
+  String firstWhere(bool test(String value), { String orElse() }) =>
       readClasses().firstWhere(test, orElse: orElse);
-  dynamic lastWhere(bool test(String value), { Object orElse()}) =>
+  String lastWhere(bool test(String value), { String orElse()}) =>
       readClasses().lastWhere(test, orElse: orElse);
   String singleWhere(bool test(String value)) =>
       readClasses().singleWhere(test);
   String elementAt(int index) => readClasses().elementAt(index);
 
   void clear() {
+    // TODO(sra): Do this without reading the classes.
     modify((s) => s.clear());
   }
   // interface Set - END
@@ -206,7 +224,7 @@ abstract class CssClassSetImpl implements CssClassSet {
    *   After f returns, the modified set is written to the
    *       className property of this element.
    */
-  modify( f(Set<String> s)) {
+  modify(f(Set<String> s)) {
     Set<String> s = readClasses();
     var ret = f(s);
     writeClasses(s);

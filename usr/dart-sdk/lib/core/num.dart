@@ -16,6 +16,7 @@ abstract class num implements Comparable<num> {
    *
    * If both operands are doubles, they are equal if they have the same
    * representation, except that:
+   *
    *   * zero and minus zero (0.0 and -0.0) are considered equal. They
    *     both have the numerical value zero.
    *   * NaN is not equal to anything, including NaN. If either operand is
@@ -23,7 +24,7 @@ abstract class num implements Comparable<num> {
    *
    * If one operand is a double and the other is an int, they are equal if
    * the double has an integer value (finite with no fractional part) and
-   * `identical(doubleValue.toInt(), intValue)`.
+   * `identical(doubleValue.toInt(), intValue)` is true.
    *
    * If both operands are integers, they are equal if they have the same value.
    *
@@ -92,11 +93,11 @@ abstract class num implements Comparable<num> {
    *
    * Returns the remainder of the euclidean division. The euclidean division of
    * two integers `a` and `b` yields two integers `q` and `r` such that
-   * `a == b*q + r` and `0 <= r < a.abs()`.
+   * `a == b * q + r` and `0 <= r < b.abs()`.
    *
    * The euclidean division is only defined for integers, but can be easily
    * extended to work with doubles. In that case `r` may have a non-integer
-   * value, but it still verifies `0 <= r < |a|`.
+   * value, but it still verifies `0 <= r < |b|`.
    *
    * The sign of the returned value `r` is always positive.
    *
@@ -290,9 +291,11 @@ abstract class num implements Comparable<num> {
   double truncateToDouble();
 
   /**
-   * Clamps [this] to be in the range [lowerLimit]-[upperLimit]. The comparison
-   * is done using [compareTo] and therefore takes `-0.0` into account.
-   * It also implies that [double.NAN] is treated as the maximal double value.
+   * Returns this [num] clamped to be in the range [lowerLimit]-[upperLimit].
+   *
+   * The comparison is done using [compareTo] and therefore takes `-0.0` into
+   * account. This also implies that [double.NAN] is treated as the maximal
+   * double value.
    */
   num clamp(num lowerLimit, num upperLimit);
 
@@ -371,8 +374,8 @@ abstract class num implements Comparable<num> {
    *     1234567.toStringAsPrecision(9); // 1234567.00
    *     12345678901234567890.toStringAsPrecision(20); // 12345678901234567168
    *     12345678901234567890.toStringAsPrecision(14); // 1.2345678901235e+19
-   *     0.00000012345.toPrecision(15); // 1.23450000000000e-7
-   *     0.0000012345.toPrecision(15);  // 0.00000123450000000000
+   *     0.00000012345.toStringAsPrecision(15); // 1.23450000000000e-7
+   *     0.0000012345.toStringAsPrecision(15);  // 0.00000123450000000000
    */
   String toStringAsPrecision(int precision);
 
@@ -423,25 +426,28 @@ abstract class num implements Comparable<num> {
    * [int.parse] without a radix).
    * If that fails, it tries to parse the [input] as a double (similar to
    * [double.parse]).
-   * If that fails, too, it invokes [onError] with [input].
+   * If that fails, too, it invokes [onError] with [input], and the result
+   * of that invocation becomes the result of calling `parse`.
    *
    * If no [onError] is supplied, it defaults to a function that throws a
    * [FormatException].
    *
    * For any number `n`, this function satisfies
-   * `identical(n, num.parse(n.toString()))`.
+   * `identical(n, num.parse(n.toString()))` (except when `n` is a NaN `double`
+   * with a payload).
    */
   static num parse(String input, [num onError(String input)]) {
     String source = input.trim();
     // TODO(lrn): Optimize to detect format and result type in one check.
-    num result = int.parse(source, onError: _returnNull);
+    num result = int.parse(source, onError: _returnIntNull);
     if (result != null) return result;
-    result = double.parse(source, _returnNull);
+    result = double.parse(source, _returnDoubleNull);
     if (result != null) return result;
     if (onError == null) throw new FormatException(input);
     return onError(input);
   }
 
-  /** Helper function for [parse]. */
-  static _returnNull(_) => null;
+  /** Helper functions for [parse]. */
+  static int _returnIntNull(String _) => null;
+  static double _returnDoubleNull(String _) => null;
 }

@@ -12,10 +12,13 @@ library dart.dom.web_sql;
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:_internal' hide deprecated;
+import 'dart:_internal';
 import 'dart:html';
 import 'dart:html_common';
 import 'dart:nativewrappers';
+import 'dart:_blink' as _blink;
+import 'dart:js' as js;
+
 // DO NOT EDIT - unless you are editing documentation as per:
 // https://code.google.com/p/dart/wiki/ContributingHTMLDocumentation
 // Auto-generated dart:audio library.
@@ -23,6 +26,16 @@ import 'dart:nativewrappers';
 
 
 
+// FIXME: Can we make this private?
+@Deprecated("Internal Use Only")
+final web_sqlBlinkMap = {
+  'Database': () => SqlDatabase.instanceRuntimeType,
+  'SQLError': () => SqlError.instanceRuntimeType,
+  'SQLResultSet': () => SqlResultSet.instanceRuntimeType,
+  'SQLResultSetRowList': () => SqlResultSetRowList.instanceRuntimeType,
+  'SQLTransaction': () => SqlTransaction.instanceRuntimeType,
+
+};
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
@@ -81,40 +94,66 @@ typedef void SqlTransactionErrorCallback(SqlError error);
 @Experimental()
 // http://www.w3.org/TR/webdatabase/#asynchronous-database-api
 @Experimental() // deprecated
-class SqlDatabase extends NativeFieldWrapperClass2 {
+class SqlDatabase extends DartHtmlDomObject {
   // To suppress missing implicit constructor warnings.
   factory SqlDatabase._() { throw new UnsupportedError("Not supported"); }
+
+
+  @Deprecated("Internal Use Only")
+  external static Type get instanceRuntimeType;
+
+  @Deprecated("Internal Use Only")
+  SqlDatabase.internal_() { }
 
   /// Checks if this type is supported on the current platform.
   static bool get supported => true;
 
   @DomName('Database.version')
   @DocsEditable()
-  String get version native "Database_version_Getter";
+  String get version => _blink.BlinkDatabase.instance.version_Getter_(this);
+  
+  void changeVersion(String oldVersion, String newVersion, [SqlTransactionCallback callback, SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) {
+    if (successCallback != null) {
+      _blink.BlinkDatabase.instance.changeVersion_Callback_5_(this, oldVersion, newVersion, callback, errorCallback, successCallback);
+      return;
+    }
+    if (errorCallback != null) {
+      _blink.BlinkDatabase.instance.changeVersion_Callback_4_(this, oldVersion, newVersion, callback, errorCallback);
+      return;
+    }
+    if (callback != null) {
+      _blink.BlinkDatabase.instance.changeVersion_Callback_3_(this, oldVersion, newVersion, callback);
+      return;
+    }
+    _blink.BlinkDatabase.instance.changeVersion_Callback_2_(this, oldVersion, newVersion);
+    return;
+  }
 
-  /**
-   * Atomically update the database version to [newVersion], asynchronously
-   * running [callback] on the [SqlTransaction] representing this
-   * [changeVersion] transaction.
-   *
-   * If [callback] runs successfully, then [successCallback] is called.
-   * Otherwise, [errorCallback] is called.
-   *
-   * [oldVersion] should match the database's current [version] exactly.
-   *
-   * * [Database.changeVersion](http://www.w3.org/TR/webdatabase/#dom-database-changeversion) from W3C.
-   */
-  @DomName('Database.changeVersion')
-  @DocsEditable()
-  void changeVersion(String oldVersion, String newVersion, [SqlTransactionCallback callback, SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) native "Database_changeVersion_Callback";
+  void readTransaction(SqlTransactionCallback callback, [SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) {
+    if (successCallback != null) {
+      _blink.BlinkDatabase.instance.readTransaction_Callback_3_(this, callback, errorCallback, successCallback);
+      return;
+    }
+    if (errorCallback != null) {
+      _blink.BlinkDatabase.instance.readTransaction_Callback_2_(this, callback, errorCallback);
+      return;
+    }
+    _blink.BlinkDatabase.instance.readTransaction_Callback_1_(this, callback);
+    return;
+  }
 
-  @DomName('Database.readTransaction')
-  @DocsEditable()
-  void readTransaction(SqlTransactionCallback callback, [SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) native "Database_readTransaction_Callback";
-
-  @DomName('Database.transaction')
-  @DocsEditable()
-  void transaction(SqlTransactionCallback callback, [SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) native "Database_transaction_Callback";
+  void transaction(SqlTransactionCallback callback, [SqlTransactionErrorCallback errorCallback, VoidCallback successCallback]) {
+    if (successCallback != null) {
+      _blink.BlinkDatabase.instance.transaction_Callback_3_(this, callback, errorCallback, successCallback);
+      return;
+    }
+    if (errorCallback != null) {
+      _blink.BlinkDatabase.instance.transaction_Callback_2_(this, callback, errorCallback);
+      return;
+    }
+    _blink.BlinkDatabase.instance.transaction_Callback_1_(this, callback);
+    return;
+  }
 
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
@@ -128,9 +167,16 @@ class SqlDatabase extends NativeFieldWrapperClass2 {
 @DomName('SQLError')
 // http://www.w3.org/TR/webdatabase/#sqlerror
 @Experimental() // deprecated
-class SqlError extends NativeFieldWrapperClass2 {
+class SqlError extends DartHtmlDomObject {
   // To suppress missing implicit constructor warnings.
   factory SqlError._() { throw new UnsupportedError("Not supported"); }
+
+
+  @Deprecated("Internal Use Only")
+  external static Type get instanceRuntimeType;
+
+  @Deprecated("Internal Use Only")
+  SqlError.internal_() { }
 
   @DomName('SQLError.CONSTRAINT_ERR')
   @DocsEditable()
@@ -166,12 +212,12 @@ class SqlError extends NativeFieldWrapperClass2 {
 
   @DomName('SQLError.code')
   @DocsEditable()
-  int get code native "SQLError_code_Getter";
-
+  int get code => _blink.BlinkSQLError.instance.code_Getter_(this);
+  
   @DomName('SQLError.message')
   @DocsEditable()
-  String get message native "SQLError_message_Getter";
-
+  String get message => _blink.BlinkSQLError.instance.message_Getter_(this);
+  
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
@@ -184,22 +230,29 @@ class SqlError extends NativeFieldWrapperClass2 {
 @DomName('SQLResultSet')
 // http://www.w3.org/TR/webdatabase/#sqlresultset
 @Experimental() // deprecated
-class SqlResultSet extends NativeFieldWrapperClass2 {
+class SqlResultSet extends DartHtmlDomObject {
   // To suppress missing implicit constructor warnings.
   factory SqlResultSet._() { throw new UnsupportedError("Not supported"); }
 
+
+  @Deprecated("Internal Use Only")
+  external static Type get instanceRuntimeType;
+
+  @Deprecated("Internal Use Only")
+  SqlResultSet.internal_() { }
+
   @DomName('SQLResultSet.insertId')
   @DocsEditable()
-  int get insertId native "SQLResultSet_insertId_Getter";
-
+  int get insertId => _blink.BlinkSQLResultSet.instance.insertId_Getter_(this);
+  
   @DomName('SQLResultSet.rows')
   @DocsEditable()
-  SqlResultSetRowList get rows native "SQLResultSet_rows_Getter";
-
+  SqlResultSetRowList get rows => _blink.BlinkSQLResultSet.instance.rows_Getter_(this);
+  
   @DomName('SQLResultSet.rowsAffected')
   @DocsEditable()
-  int get rowsAffected native "SQLResultSet_rowsAffected_Getter";
-
+  int get rowsAffected => _blink.BlinkSQLResultSet.instance.rowsAffected_Getter_(this);
+  
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
@@ -212,20 +265,28 @@ class SqlResultSet extends NativeFieldWrapperClass2 {
 @DomName('SQLResultSetRowList')
 // http://www.w3.org/TR/webdatabase/#sqlresultsetrowlist
 @Experimental() // deprecated
-class SqlResultSetRowList extends NativeFieldWrapperClass2 with ListMixin<Map>, ImmutableListMixin<Map> implements List<Map> {
+class SqlResultSetRowList extends DartHtmlDomObject with ListMixin<Map>, ImmutableListMixin<Map> implements List<Map> {
   // To suppress missing implicit constructor warnings.
   factory SqlResultSetRowList._() { throw new UnsupportedError("Not supported"); }
 
+
+  @Deprecated("Internal Use Only")
+  external static Type get instanceRuntimeType;
+
+  @Deprecated("Internal Use Only")
+  SqlResultSetRowList.internal_() { }
+
   @DomName('SQLResultSetRowList.length')
   @DocsEditable()
-  int get length native "SQLResultSetRowList_length_Getter";
-
+  int get length => _blink.BlinkSQLResultSetRowList.instance.length_Getter_(this);
+  
   Map operator[](int index) {
     if (index < 0 || index >= length)
-      throw new RangeError.range(index, 0, length);
+      throw new RangeError.index(index, this);
     return _nativeIndexedGetter(index);
   }
-  Map _nativeIndexedGetter(int index) native "SQLResultSetRowList_item_Callback";
+
+  Map _nativeIndexedGetter(int index) => convertNativeToDart_Dictionary(_blink.BlinkSQLResultSetRowList.instance.item_Callback_1_(this, index));
 
   void operator[]=(int index, Map value) {
     throw new UnsupportedError("Cannot assign element of immutable List.");
@@ -234,7 +295,7 @@ class SqlResultSetRowList extends NativeFieldWrapperClass2 with ListMixin<Map>, 
   // Map is the element type.
 
 
-  void set length(int value) {
+  set length(int value) {
     throw new UnsupportedError("Cannot resize immutable List.");
   }
 
@@ -267,8 +328,8 @@ class SqlResultSetRowList extends NativeFieldWrapperClass2 with ListMixin<Map>, 
 
   @DomName('SQLResultSetRowList.item')
   @DocsEditable()
-  Map item(int index) native "SQLResultSetRowList_item_Callback";
-
+  Object item(int index) => convertNativeToDart_Dictionary(_blink.BlinkSQLResultSetRowList.instance.item_Callback_1_(this, index));
+  
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
@@ -284,31 +345,32 @@ class SqlResultSetRowList extends NativeFieldWrapperClass2 with ListMixin<Map>, 
 @Experimental()
 // http://www.w3.org/TR/webdatabase/#sqltransaction
 @deprecated // deprecated
-class SqlTransaction extends NativeFieldWrapperClass2 {
+class SqlTransaction extends DartHtmlDomObject {
   // To suppress missing implicit constructor warnings.
   factory SqlTransaction._() { throw new UnsupportedError("Not supported"); }
 
-  @DomName('SQLTransaction.executeSql')
-  @DocsEditable()
-  void executeSql(String sqlStatement, List arguments, [SqlStatementCallback callback, SqlStatementErrorCallback errorCallback]) native "SQLTransaction_executeSql_Callback";
 
-}
-// Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
-// for details. All rights reserved. Use of this source code is governed by a
-// BSD-style license that can be found in the LICENSE file.
+  @Deprecated("Internal Use Only")
+  external static Type get instanceRuntimeType;
 
-// WARNING: Do not edit - generated code.
+  @Deprecated("Internal Use Only")
+  SqlTransaction.internal_() { }
 
-
-@DocsEditable()
-@DomName('SQLTransactionSync')
-@SupportedBrowser(SupportedBrowser.CHROME)
-@SupportedBrowser(SupportedBrowser.SAFARI)
-@Experimental()
-// http://www.w3.org/TR/webdatabase/#sqltransactionsync
-@Experimental() // deprecated
-abstract class _SQLTransactionSync extends NativeFieldWrapperClass2 {
-  // To suppress missing implicit constructor warnings.
-  factory _SQLTransactionSync._() { throw new UnsupportedError("Not supported"); }
+  void executeSql(String sqlStatement, [List arguments, SqlStatementCallback callback, SqlStatementErrorCallback errorCallback]) {
+    if (errorCallback != null) {
+      _blink.BlinkSQLTransaction.instance.executeSql_Callback_4_(this, sqlStatement, arguments, callback, errorCallback);
+      return;
+    }
+    if (callback != null) {
+      _blink.BlinkSQLTransaction.instance.executeSql_Callback_3_(this, sqlStatement, arguments, callback);
+      return;
+    }
+    if (arguments != null) {
+      _blink.BlinkSQLTransaction.instance.executeSql_Callback_2_(this, sqlStatement, arguments);
+      return;
+    }
+    _blink.BlinkSQLTransaction.instance.executeSql_Callback_1_(this, sqlStatement);
+    return;
+  }
 
 }

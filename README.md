@@ -7,66 +7,31 @@ This cartridge will work on OpenShift Online, and Origin (CentOS).
 
 You can create an application using RHC tools by running:
 
-    rhc app create mydartapp https://raw.github.com/kraman/openshift-dart/master/metadata/manifest.yml
-    
+    rhc app create mydartapp https://raw.githubusercontent.com/venosyd/openshift-dart/master/metadata/manifest.yml
+
 ## Installing locally on OpenShift Origin
 
-Instead of using this as a downloadable cartridge, you can also install this cartridge on your Origin
-installation just like the built-in cartridges.
-
-On each node host:
-
-    #clone the git repository on the node
-    > git clone https://github.com/kraman/openshift-dart
-    
-    #install the cartridge
-    > oo-admin-cartridge -a install --mco --source openshift-dart
-    > restorecon -rv /var/lib/openshift/.cartridge_repository/kraman-dart
-
-On each broker host:
-    
-    #clear broker and console cartridge cache
-    > oo-admin-broker-cache -c --console
-
-Create a sample application (example execution):
-
-    > rhc app create dart dart --no-dns
-    Using kraman-dart-1.1 (DartLang 1.1) for 'dart'
-
-    Application Options
-    -------------------
-    Domain:     localns
-    Cartridges: kraman-dart-1.1
-    Gear Size:  default
-    Scaling:    no
-
-    Creating application 'dart' ... done
+Visit https://github.com/kraman/openshift-dart for instructions
 
 
-    Your application 'dart' is now available.
-
-      URL:        http://dart-localns.openshift.local/
-      SSH to:     52e17d71a1173e8c9b0000ca@dart-localns.openshift.local
-      Git remote: ssh://52e17d71a1173e8c9b0000ca@dart-localns.openshift.local/~/git/dart.git/
-
-    Run 'rhc show-app dart' for more details about your app.
-    
-    
 ## Writing Dart applications
 
-The cartridge expects a ```server.dart``` in the root of the repository which listens on the IP/port specified
-in ```OPENSHIFT_DART_IP``` and ```OPENSHIFT_DART_PORT``` environment variables. A sample ```server.dart``` has
-been provided. Log files should be stored in ```OPENSHIFT_DART_LOG_DIR```.
+Use the pub app model, from Dart Documentation:
+
+**bin/** -> for serverside code  
+**lib/** -> for common code between server and clients  
+**web/** -> for, obviously, web code  
+
+The cartridge expects a ```appserver.dart``` in the folder ```bin``` which listens on the IP/port specified  
+in ```OPENSHIFT_DART_IP``` and ```OPENSHIFT_DART_PORT``` environment variables. A sample ```appserver.dart```  
+has been provided. Log files should be stored in ```OPENSHIFT_DART_LOG_DIR```.
 
 ### Dart Application Builds
 
 Upon a git push the cartridge tries to build your application. I will execute the following:
 
-    #download dependencies based on pubspec.yaml
-    pub get
-    #build dart files
-    pub build
-    dart build.dart --full
+    # download dependencies based on pubspec.yaml
+    pub get && pub build
 
 ## Dart Binaries
 
@@ -80,10 +45,10 @@ An additional patch is added to enable pub build to use OPENSHIFT_DART_PUB_BUILD
     +++ sdk/lib/_internal/pub/lib/src/command/build.dart  (working copy)
     @@ -5,6 +5,7 @@
      library pub.command.build;
-     
+
      import 'dart:async';
     +import 'dart:io';
-     
+
      import 'package:barback/barback.dart';
      import 'package:path/path.dart' as path;
     @@ -63,7 +64,13 @@

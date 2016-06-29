@@ -58,6 +58,16 @@ abstract class Timer {
    *
    * The [callback] is invoked repeatedly with [duration] intervals until
    * canceled with the [cancel] function.
+   *
+   * The exact timing depends on the underlying timer implementation.
+   * No more than `n` callbacks will be made in `duration * n` time,
+   * but the time between two consecutive callbacks
+   * can be shorter and longer than `duration`.
+   *
+   * In particular, an implementation may schedule the next callback, e.g.,
+   * a `duration` after either when the previous callback ended,
+   * when the previous callback started, or when the previous callback was
+   * scheduled for - even if the actual callback was delayed.
    */
   factory Timer.periodic(Duration duration,
                          void callback(Timer timer)) {
@@ -66,8 +76,11 @@ abstract class Timer {
       // be invoked in the root zone.
       return Zone.current.createPeriodicTimer(duration, callback);
     }
-    return Zone.current.createPeriodicTimer(
-        duration, Zone.current.bindUnaryCallback(callback, runGuarded: true));
+    // TODO(floitsch): the return type should be 'void', and the type
+    // should be inferred.
+    var boundCallback = Zone.current.bindUnaryCallback/*<dynamic, Timer>*/(
+        callback, runGuarded: true);
+    return Zone.current.createPeriodicTimer(duration, boundCallback);
   }
 
   /**
@@ -93,8 +106,9 @@ abstract class Timer {
    * A periodic timer is active if it has not been canceled.
    */
   bool get isActive;
+
+  external static Timer _createTimer(Duration duration, void callback());
+  external static Timer _createPeriodicTimer(Duration duration,
+                                             void callback(Timer timer));
 }
 
-external Timer _createTimer(Duration duration, void callback());
-external Timer _createPeriodicTimer(Duration duration,
-                                    void callback(Timer timer));

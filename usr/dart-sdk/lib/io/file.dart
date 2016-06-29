@@ -5,49 +5,209 @@
 part of dart.io;
 
 /**
- * FileMode describes the modes in which a file can be opened.
+ * The modes in which a File can be opened.
  */
 class FileMode {
-  /// The [FileMode] for opening a file only for reading.
+  /// The mode for opening a file only for reading.
   static const READ = const FileMode._internal(0);
-  /// The [FileMode] for opening a file for reading and writing. The file will
-  /// be overwritten. If the file does not exist, it will be created.
+  /// Mode for opening a file for reading and writing. The file is
+  /// overwritten if it already exists. The file is created if it does not
+  /// already exist.
   static const WRITE = const FileMode._internal(1);
-  /// The [FileMode] for opening a file for reading a file and writing to the
-  /// end of it. If the file does not exist, it will be created.
+  /// Mode for opening a file for reading and writing to the
+  /// end of it. The file is created if it does not already exist.
   static const APPEND = const FileMode._internal(2);
+  /// Mode for opening a file for writing *only*. The file is
+  /// overwritten if it already exists. The file is created if it does not
+  /// already exist.
+  static const WRITE_ONLY = const FileMode._internal(3);
+  /// Mode for opening a file for writing *only* to the
+  /// end of it. The file is created if it does not already exist.
+  static const WRITE_ONLY_APPEND = const FileMode._internal(4);
   final int _mode;
 
   const FileMode._internal(this._mode);
 }
 
-/// The [FileMode] for opening a file only for reading.
+/// The mode for opening a file only for reading.
 const READ = FileMode.READ;
-/// The [FileMode] for opening a file for reading and writing. The file will be
-/// overwritten. If the file does not exist, it will be created.
+/// The mode for opening a file for reading and writing. The file is
+/// overwritten if it already exists. The file is created if it does not
+/// already exist.
 const WRITE = FileMode.WRITE;
-/// The [FileMode] for opening a file for reading a file and writing to the end
-/// of it. If the file does not exist, it will be created.
+/// The mode for opening a file for reading and writing to the
+/// end of it. The file is created if it does not already exist.
 const APPEND = FileMode.APPEND;
+/// Mode for opening a file for writing *only*. The file is
+/// overwritten if it already exists. The file is created if it does not
+/// already exist.
+const WRITE_ONLY = FileMode.WRITE_ONLY;
+/// Mode for opening a file for writing *only* to the
+/// end of it. The file is created if it does not already exist.
+const WRITE_ONLY_APPEND = FileMode.WRITE_ONLY_APPEND;
+
+
+/// Type of lock when requesting a lock on a file.
+enum FileLock {
+  /// Shared file lock.
+  SHARED,
+  /// Exclusive file lock.
+  EXCLUSIVE,
+  /// Blocking shared file lock.
+  BLOCKING_SHARED,
+  /// Blocking exclusive file lock.
+  BLOCKING_EXCLUSIVE,
+}
 
 /**
  * A reference to a file on the file system.
  *
- * If [path] is a symbolic link, rather than a file, then
- * the methods of [File] operate on the ultimate target of the
- * link, except for File.delete and File.deleteSync, which operate on
+ * A File instance is an object that holds a [path] on which operations can
+ * be performed.
+ * You can get the parent directory of the file using the getter [parent],
+ * a property inherited from [FileSystemEntity].
+ *
+ * Create a new File object with a pathname to access the specified file on the
+ * file system from your program.
+ *
+ *     var myFile = new File('file.txt');
+ *
+ * The File class contains methods for manipulating files and their contents.
+ * Using methods in this class, you can open and close files, read to and write
+ * from them, create and delete them, and check for their existence.
+ *
+ * When reading or writing a file, you can use streams (with [openRead]),
+ * random access operations (with [open]),
+ * or convenience methods such as [readAsString],
+ *
+ * Most methods in this class occur in synchronous and asynchronous pairs,
+ * for example, [readAsString] and [readAsStringSync].
+ * Unless you have a specific reason for using the synchronous version
+ * of a method, prefer the asynchronous version to avoid blocking your program.
+ *
+ * ## If path is a link
+ *
+ * If [path] is a symbolic link, rather than a file,
+ * then the methods of File operate on the ultimate target of the
+ * link, except for [delete] and [deleteSync], which operate on
  * the link.
  *
- * To operate on the underlying file data there are two options:
+ * ## Read from a file
  *
- *  * Use streaming: read the contents of the file from the [Stream]
- *    this.[openRead]() and write to the file by writing to the [IOSink]
- *    this.[openWrite]().
- *  * Open the file for random access operations using [open].
+ * The following code sample reads the entire contents from a file as a string
+ * using the asynchronous [readAsString] method:
+ *
+ *     import 'dart:async';
+ *     import 'dart:io';
+ *
+ *     void main() {
+ *       new File('file.txt').readAsString().then((String contents) {
+ *         print(contents);
+ *       });
+ *     }
+ *
+ * A more flexible and useful way to read a file is with a [Stream].
+ * Open the file with [openRead], which returns a stream that
+ * provides the data in the file as chunks of bytes.
+ * Listen to the stream for data and process as needed.
+ * You can use various transformers in succession to manipulate the
+ * data into the required format or to prepare it for output.
+ *
+ * You might want to use a stream to read large files,
+ * to manipulate the data with tranformers,
+ * or for compatibility with another API, such as [WebSocket]s.
+ *
+ *     import 'dart:io';
+ *     import 'dart:convert';
+ *     import 'dart:async';
+ *
+ *     main() {
+ *       final file = new File('file.txt');
+ *       Stream<List<int>> inputStream = file.openRead();
+ *
+ *       inputStream
+ *         .transform(UTF8.decoder)       // Decode bytes to UTF8.
+ *         .transform(new LineSplitter()) // Convert stream to individual lines.
+ *         .listen((String line) {        // Process results.
+ *             print('$line: ${line.length} bytes');
+ *           },
+ *           onDone: () { print('File is now closed.'); },
+ *           onError: (e) { print(e.toString()); });
+ *     }
+ *
+ * ## Write to a file
+ *
+ * To write a string to a file, use the [writeAsString] method:
+ *
+ *     import 'dart:io';
+ *
+ *     void main() {
+ *       final filename = 'file.txt';
+ *       new File(filename).writeAsString('some content')
+ *         .then((File file) {
+ *           // Do something with the file.
+ *         });
+ *     }
+ *
+ * You can also write to a file using a [Stream]. Open the file with
+ * [openWrite], which returns a stream to which you can write data.
+ * Be sure to close the file with the [close] method.
+ *
+ *     import 'dart:io';
+ *
+ *     void main() {
+ *       var file = new File('file.txt');
+ *       var sink = file.openWrite();
+ *       sink.write('FILE ACCESSED ${new DateTime.now()}\n');
+ *
+ *       // Close the IOSink to free system resources.
+ *       sink.close();
+ *     }
+ *
+ * ## The use of Futures
+ *
+ * To avoid unintentional blocking of the program,
+ * several methods use a [Future] to return a value. For example,
+ * the [length] method, which gets the length of a file, returns a Future.
+ * Use `then` to register a callback function, which is called when
+ * the value is ready.
+ *
+ *     import 'dart:io';
+ *
+ *     main() {
+ *       final file = new File('file.txt');
+ *
+ *       file.length().then((len) {
+ *         print(len);
+ *       });
+ *     }
+ *
+ * In addition to length, the [exists], [lastModified], [stat], and
+ * other methods, return Futures.
+ *
+ * ## Other resources
+ *
+ * * [Dart by Example](https://www.dartlang.org/dart-by-example/#files-directories-and-symlinks)
+ *   provides additional task-oriented code samples that show how to use
+ *   various API from the Directory class and the related [File] class.
+ *
+ * * [I/O for Command-Line
+ *   Apps](https://www.dartlang.org/docs/dart-up-and-running/ch03.html#dartio---io-for-command-line-apps)
+ *   a section from _A Tour of the Dart Libraries_ covers files and directories.
+ *
+ * * [Write Command-Line Apps](https://www.dartlang.org/docs/tutorials/cmdline/),
+ *   a tutorial about writing command-line apps, includes information about
+ *   files and directories.
  */
 abstract class File implements FileSystemEntity {
   /**
-   * Create a File object.
+   * Creates a [File] object.
+   *
+   * If [path] is a relative path, it will be interpreted relative to the
+   * current working directory (see [Directory.current]), when used.
+   *
+   * If [path] is an absolute path, it will be immune to changes to the
+   * current working directory.
    */
   factory File(String path) => new _File(path);
 
@@ -362,9 +522,23 @@ abstract class File implements FileSystemEntity {
 
 
 /**
- * [RandomAccessFile] provides random access to the data in a
- * file. [RandomAccessFile] objects are obtained by calling the
+ * `RandomAccessFile` provides random access to the data in a
+ * file.
+ *
+ * `RandomAccessFile` objects are obtained by calling the
  * [:open:] method on a [File] object.
+ *
+ * A `RandomAccessFile` have both asynchronous and synchronous
+ * methods. The asynchronous methods all return a `Future`
+ * whereas the synchronous methods will return the result directly,
+ * and block the current isolate until the result is ready.
+ *
+ * At most one asynchronous method can be pending on a given `RandomAccessFile`
+ * instance at the time. If an asynchronous method is called when one is
+ * already in progress a [FileSystemException] is thrown.
+ *
+ * If an asynchronous method is pending it is also not possible to call any
+ * synchronous methods. This will also throw a [FileSystemException].
  */
 abstract class RandomAccessFile {
   /**
@@ -416,7 +590,7 @@ abstract class RandomAccessFile {
    *
    * Returns a [:Future<int>:] that completes with the number of bytes read.
    */
-  Future<int> readInto(List<int> buffer, [int start, int end]);
+  Future<int> readInto(List<int> buffer, [int start = 0, int end]);
 
   /**
    * Synchronously reads into an existing List<int> from the file. If [start] is
@@ -427,7 +601,7 @@ abstract class RandomAccessFile {
    *
    * Throws a [FileSystemException] if the operation fails.
    */
-  int readIntoSync(List<int> buffer, [int start, int end]);
+  int readIntoSync(List<int> buffer, [int start = 0, int end]);
 
   /**
    * Writes a single byte to the file. Returns a
@@ -452,7 +626,8 @@ abstract class RandomAccessFile {
    * Returns a [:Future<RandomAccessFile>:] that completes with this
    * [RandomAccessFile] when the write completes.
    */
-  Future<RandomAccessFile> writeFrom(List<int> buffer, [int start, int end]);
+  Future<RandomAccessFile> writeFrom(
+      List<int> buffer, [int start = 0, int end]);
 
   /**
    * Synchronously writes from a [List<int>] to the file. It will read the
@@ -462,7 +637,7 @@ abstract class RandomAccessFile {
    *
    * Throws a [FileSystemException] if the operation fails.
    */
-  void writeFromSync(List<int> buffer, [int start, int end]);
+  void writeFromSync(List<int> buffer, [int start = 0, int end]);
 
   /**
    * Writes a string to the file using the given [Encoding]. Returns a
@@ -548,6 +723,115 @@ abstract class RandomAccessFile {
    * Throws a [FileSystemException] if the operation fails.
    */
   void flushSync();
+
+  /**
+   * Locks the file or part of the file.
+   *
+   * By default an exclusive lock will be obtained, but that can be overridden
+   * by the [mode] argument.
+   *
+   * Locks the byte range from [start] to [end] of the file, with the
+   * byte at position `end` not included. If no arguments are
+   * specified, the full file is locked, If only `start` is specified
+   * the file is locked from byte position `start` to the end of the
+   * file, no matter how large it grows. It is possible to specify an
+   * explicit value of `end` which is past the current length of the file.
+   *
+   * To obtain an exclusive lock on a file it must be opened for writing.
+   *
+   * If [mode] is [FileLock.EXCLUSIVE] or [FileLock.SHARED], an error is
+   * signaled if the lock cannot be obtained. If [mode] is
+   * [FileLock.BLOCKING_EXCLUSIVE] or [FileLock.BLOCKING_SHARED], the
+   * returned [Future] is resolved only when the lock has been obtained.
+   *
+   * *NOTE* file locking does have slight differences in behavior across
+   * platforms:
+   *
+   * On Linux and OS X this uses advisory locks, which have the
+   * surprising semantics that all locks associated with a given file
+   * are removed when *any* file descriptor for that file is closed by
+   * the process. Note that this does not actually lock the file for
+   * access. Also note that advisory locks are on a process
+   * level. This means that several isolates in the same process can
+   * obtain an exclusive lock on the same file.
+   *
+   * On Windows the regions used for lock and unlock needs to match. If that
+   * is not the case unlocking will result in the OS error "The segment is
+   * already unlocked".
+   */
+  Future<RandomAccessFile> lock(
+      [FileLock mode = FileLock.EXCLUSIVE, int start = 0, int end = -1]);
+
+  /**
+   * Synchronously locks the file or part of the file.
+   *
+   * By default an exclusive lock will be obtained, but that can be overridden
+   * by the [mode] argument.
+   *
+   * Locks the byte range from [start] to [end] of the file ,with the
+   * byte at position `end` not included. If no arguments are
+   * specified, the full file is locked, If only `start` is specified
+   * the file is locked from byte position `start` to the end of the
+   * file, no matter how large it grows. It is possible to specify an
+   * explicit value of `end` which is past the current length of the file.
+   *
+   * To obtain an exclusive lock on a file it must be opened for writing.
+   *
+   * If [mode] is [FileLock.EXCLUSIVE] or [FileLock.SHARED], an exception is
+   * thrown if the lock cannot be obtained. If [mode] is
+   * [FileLock.BLOCKING_EXCLUSIVE] or [FileLock.BLOCKING_SHARED], the
+   * call returns only after the lock has been obtained.
+   *
+   * *NOTE* file locking does have slight differences in behavior across
+   * platforms:
+   *
+   * On Linux and OS X this uses advisory locks, which have the
+   * surprising semantics that all locks associated with a given file
+   * are removed when *any* file descriptor for that file is closed by
+   * the process. Note that this does not actually lock the file for
+   * access. Also note that advisory locks are on a process
+   * level. This means that several isolates in the same process can
+   * obtain an exclusive lock on the same file.
+   *
+   * On Windows the regions used for lock and unlock needs to match. If that
+   * is not the case unlocking will result in the OS error "The segment is
+   * already unlocked".
+   *
+   */
+  void lockSync(
+      [FileLock mode = FileLock.EXCLUSIVE, int start = 0, int end = -1]);
+
+  /**
+   * Unlocks the file or part of the file.
+   *
+   * Unlocks the byte range from [start] to [end] of the file, with
+   * the byte at position `end` not included. If no arguments are
+   * specified, the full file is unlocked, If only `start` is
+   * specified the file is unlocked from byte position `start` to the
+   * end of the file.
+   *
+   * *NOTE* file locking does have slight differences in behavior across
+   * platforms:
+   *
+   * See [lock] for more details.
+   */
+  Future<RandomAccessFile> unlock([int start = 0, int end = -1]);
+
+  /**
+   * Synchronously unlocks the file or part of the file.
+   *
+   * Unlocks the byte range from [start] to [end] of the file, with
+   * the byte at position `end` not included. If no arguments are
+   * specified, the full file is unlocked, If only `start` is
+   * specified the file is unlocked from byte position `start` to the
+   * end of the file.
+   *
+   * *NOTE* file locking does have slight differences in behavior across
+   * platforms:
+   *
+   * See [lockSync] for more details.
+   */
+  void unlockSync([int start = 0, int end = -1]);
 
   /**
    * Returns a human-readable string for this RandomAccessFile instance.

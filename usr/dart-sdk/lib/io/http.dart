@@ -55,42 +55,143 @@ abstract class HttpStatus {
 
 
 /**
- * A server that delivers content, such as web pages, using
- * the HTTP protocol.
+ * A server that delivers content, such as web pages, using the HTTP protocol.
  *
- * The [HttpServer] is a [Stream] of [HttpRequest]s. Each
- * [HttpRequest] has an associated [HttpResponse] object as its
- * [HttpRequest.response] member, and the server responds to a request by
- * writing to that [HttpResponse] object.
+ * The HttpServer is a [Stream] that provides [HttpRequest] objects. Each
+ * HttpRequest has an associated [HttpResponse] object.
+ * The server responds to a request by writing to that HttpResponse object.
+ * The following example shows how to bind an HttpServer to an IPv6
+ * [InternetAddress] on port 80 (the standard port for HTTP servers)
+ * and how to listen for requests.
+ * Port 80 is the default HTTP port. However, on most systems accessing
+ * this requires super-user privileges. For local testing consider
+ * using a non-reserved port (1024 and above).
  *
- * Incomplete requests where all or parts of the header is missing, are
- * ignored and no exceptions or [HttpRequest] objects are generated for them.
- * Likewise, when writing to a [HttpResponse], any [Socket] exceptions are
+ *     import 'dart:io';
+ *
+ *     main() {
+ *       HttpServer
+ *           .bind(InternetAddress.ANY_IP_V6, 80)
+ *           .then((server) {
+ *             server.listen((HttpRequest request) {
+ *               request.response.write('Hello, world!');
+ *               request.response.close();
+ *             });
+ *           });
+ *     }
+ *
+ * Incomplete requests, in which all or part of the header is missing, are
+ * ignored, and no exceptions or HttpRequest objects are generated for them.
+ * Likewise, when writing to an HttpResponse, any [Socket] exceptions are
  * ignored and any future writes are ignored.
  *
- * The [HttpRequest] exposes the request headers, and provides the request body,
- * if it exists, as a stream of data. If the body is unread, it'll be drained
- * when the [HttpResponse] is being written to or closed.
+ * The HttpRequest exposes the request headers and provides the request body,
+ * if it exists, as a Stream of data. If the body is unread, it is drained
+ * when the server writes to the HttpResponse or closes it.
  *
- * The following example shows how to bind a [HttpServer] to a IPv6
- * [InternetAddress] on port 80, and listening to requests.
+ * ## Bind with a secure HTTPS connection
  *
- *     HttpServer.bind(InternetAddress.ANY_IP_V6, 80).then((server) {
- *       server.listen((HttpRequest request) {
- *         // Handle requests.
- *       });
- *     });
+ * Use [bindSecure] to create an HTTPS server.
+ *
+ * The server presents a certificate to the client. The certificate
+ * chain and the private key are set in the [SecurityContext]
+ * object that is passed to [bindSecure].
+ *
+ *     import 'dart:io';
+ *     import "dart:isolate";
+ *
+ *     main() {
+ *       SecurityContext context = new SecurityContext();
+ *       var chain =
+ *           Platform.script.resolve('certificates/server_chain.pem')
+ *           .toFilePath();
+ *       var key =
+ *           Platform.script.resolve('certificates/server_key.pem')
+ *           .toFilePath();
+ *       context.useCertificateChain(chain);
+ *       context.usePrivateKey(key, password: 'dartdart');
+ *
+ *       HttpServer
+ *           .bindSecure(InternetAddress.ANY_IP_V6,
+ *                       443,
+ *                       context)
+ *           .then((server) {
+ *             server.listen((HttpRequest request) {
+ *               request.response.write('Hello, world!');
+ *               request.response.close();
+ *             });
+ *           });
+ *     }
+ *
+ *  The certificates and keys are PEM files, which can be created and
+ *  managed with the tools in OpenSSL.
+ *
+ * ## Connect to a server socket
+ *
+ * You can use the [listenOn] constructor to attach an HTTP server to
+ * a [ServerSocket].
+ *
+ *     import 'dart:io';
+ *
+ *     main() {
+ *       ServerSocket.bind(InternetAddress.ANY_IP_V6, 80)
+ *         .then((serverSocket) {
+ *           HttpServer httpserver = new HttpServer.listenOn(serverSocket);
+ *           serverSocket.listen((Socket socket) {
+ *             socket.write('Hello, client.');
+ *           });
+ *         });
+ *     }
+ *
+ * ## Other resources
+ *
+ * * HttpServer is a Stream. Refer to the [Stream] class for information
+ * about the streaming qualities of an HttpServer.
+ * Pausing the subscription of the stream, pauses at the OS level.
+ *
+ * * The [http_server](https://pub.dartlang.org/packages/http_server)
+ * package on pub.dartlang.org contains a set of high-level classes that,
+ * together with this class, makes it easy to provide content through HTTP
+ * servers.
  */
 abstract class HttpServer implements Stream<HttpRequest> {
   /**
-   * Set and get the default value of the `Server` header for all responses
-   * generated by this [HttpServer]. The default value is
-   * `Dart/<version> (dart:io)`.
+   * Get and set the default value of the `Server` header for all responses
+   * generated by this [HttpServer].
    *
-   * If the serverHeader is set to `null`, no default `Server` header will be
-   * added to each response.
+   * If [serverHeader] is `null`, no `Server` header will be added to each
+   * response.
+   *
+   * The default value is `null`.
    */
   String serverHeader;
+
+  /**
+   * Default set of headers added to all response objects.
+   *
+   * By default the following headers are in this set:
+   *
+   *     Content-Type: text/plain; charset=utf-8
+   *     X-Frame-Options: SAMEORIGIN
+   *     X-Content-Type-Options: nosniff
+   *     X-XSS-Protection: 1; mode=block
+   *
+   * If the `Server` header is added here and the `serverHeader` is set as
+   * well then the value of `serverHeader` takes precedence.
+   */
+  HttpHeaders get defaultResponseHeaders;
+
+   /**
+   * Whether the [HttpServer] should compress the content, if possible.
+   *
+   * The content can only be compressed when the response is using
+   * chunked Transfer-Encoding and the incoming request has `gzip`
+   * as an accepted encoding in the Accept-Encoding header.
+   *
+   * The default value is `false` (compression disabled).
+   * To enable, set `autoCompress` to `true`.
+   */
+  bool autoCompress;
 
   /**
    * Get or set the timeout used for idle keep-alive connections. If no further
@@ -99,9 +200,13 @@ abstract class HttpServer implements Stream<HttpRequest> {
    *
    * Default is 120 seconds.
    *
+   * Note that it may take up to `2 * idleTimeout` before a idle connection is
+   * aborted.
+   *
    * To disable, set [idleTimeout] to `null`.
    */
   Duration idleTimeout;
+
 
   /**
    * Starts listening for HTTP requests on the specified [address] and
@@ -120,9 +225,8 @@ abstract class HttpServer implements Stream<HttpRequest> {
    *
    * If an IP version 6 (IPv6) address is used, both IP version 6
    * (IPv6) and version 4 (IPv4) connections will be accepted. To
-   * restrict this to version 6 (IPv6) only, use [HttpServer.listenOn]
-   * with a [ServerSocket] configured for IP version 6 connections
-   * only.
+   * restrict this to version 6 (IPv6) only, use [v6Only] to set
+   * version 6 only.
    *
    * If [port] has the value [:0:] an ephemeral port will be chosen by
    * the system. The actual port used can be retrieved using the
@@ -132,11 +236,20 @@ abstract class HttpServer implements Stream<HttpRequest> {
    * backlog for the underlying OS listen setup. If [backlog] has the
    * value of [:0:] (the default) a reasonable value will be chosen by
    * the system.
+   *
+   * The optional argument [shared] specifies whether additional HttpServer
+   * objects can bind to the same combination of `address`, `port` and `v6Only`.
+   * If `shared` is `true` and more `HttpServer`s from this isolate or other
+   * isolates are bound to the port, then the incoming connections will be
+   * distributed among all the bound `HttpServer`s. Connections can be
+   * distributed over multiple isolates this way.
    */
   static Future<HttpServer> bind(address,
                                  int port,
-                                 {int backlog: 0})
-      => _HttpServer.bind(address, port, backlog);
+                                 {int backlog: 0,
+                                  bool v6Only: false,
+                                  bool shared: false})
+      => _HttpServer.bind(address, port, backlog, v6Only, shared);
 
   /**
    * The [address] can either be a [String] or an
@@ -152,9 +265,8 @@ abstract class HttpServer implements Stream<HttpRequest> {
    *
    * If an IP version 6 (IPv6) address is used, both IP version 6
    * (IPv6) and version 4 (IPv4) connections will be accepted. To
-   * restrict this to version 6 (IPv6) only, use [HttpServer.listenOn]
-   * with a [ServerSocket] configured for IP version 6 connections
-   * only.
+   * restrict this to version 6 (IPv6) only, use [v6Only] to set
+   * version 6 only.
    *
    * If [port] has the value [:0:] an ephemeral port will be chosen by
    * the system. The actual port used can be retrieved using the
@@ -165,22 +277,34 @@ abstract class HttpServer implements Stream<HttpRequest> {
    * value of [:0:] (the default) a reasonable value will be chosen by
    * the system.
    *
-   * The certificate with nickname or distinguished name (DN) [certificateName]
-   * is looked up in the certificate database, and is used as the server
-   * certificate. If [requestClientCertificate] is true, the server will
+   * If [requestClientCertificate] is true, the server will
    * request clients to authenticate with a client certificate.
+   * The server will advertise the names of trusted issuers of client
+   * certificates, getting them from [context], where they have been
+   * set using [SecurityContext.setClientAuthorities].
+   *
+   * The optional argument [shared] specifies whether additional HttpServer
+   * objects can bind to the same combination of `address`, `port` and `v6Only`.
+   * If `shared` is `true` and more `HttpServer`s from this isolate or other
+   * isolates are bound to the port, then the incoming connections will be
+   * distributed among all the bound `HttpServer`s. Connections can be
+   * distributed over multiple isolates this way.
    */
 
   static Future<HttpServer> bindSecure(address,
                                        int port,
+                                       SecurityContext context,
                                        {int backlog: 0,
-                                        String certificateName,
-                                        bool requestClientCertificate: false})
+                                        bool v6Only: false,
+                                        bool requestClientCertificate: false,
+                                        bool shared: false})
       => _HttpServer.bindSecure(address,
                                 port,
+                                context,
                                 backlog,
-                                certificateName,
-                                requestClientCertificate);
+                                v6Only,
+                                requestClientCertificate,
+                                shared);
 
   /**
    * Attaches the HTTP server to an existing [ServerSocket]. When the
@@ -259,12 +383,33 @@ class HttpConnectionsInfo {
 
 
 /**
- * Access to the HTTP headers for requests and responses. In some
- * situations the headers will be immutable and the mutating methods
- * will then throw exceptions.
+ * Headers for HTTP requests and responses.
+ *
+ * In some situations, headers are immutable:
+ *
+ * * HttpRequest and HttpClientResponse always have immutable headers.
+ *
+ * * HttpResponse and HttpClientRequest have immutable headers
+ *   from the moment the body is written to.
+ *
+ * In these situations, the mutating methods throw exceptions.
  *
  * For all operations on HTTP headers the header name is
  * case-insensitive.
+ *
+ * To set the value of a header use the `set()` method:
+ *
+ *     request.headers.set(HttpHeaders.CACHE_CONTROL,
+                           'max-age=3600, must-revalidate');
+ *
+ * To retrieve the value of a header use the `value()` method:
+ *
+ *     print(request.headers.value(HttpHeaders.USER_AGENT));
+ *
+ * An HttpHeaders object holds a list of values for each name
+ * as the standard allows. In most cases a name holds only a single value,
+ * The most common mode of operation is to use `set()` for setting a value,
+ * and `value()` for retrieving a value.
  */
 abstract class HttpHeaders {
   static const ACCEPT = "accept";
@@ -484,6 +629,13 @@ abstract class HttpHeaders {
    * 'set-cookie' header has folding disabled by default.
    */
   void noFolding(String name);
+
+  /**
+   * Remove all headers. Some headers have system supplied values and
+   * for these the system supplied values will still be added to the
+   * collection of values for the header.
+   */
+  void clear();
 }
 
 
@@ -531,9 +683,11 @@ abstract class HeaderValue {
    */
   static HeaderValue parse(String value,
                            {String parameterSeparator: ";",
+                            String valueSeparator: null,
                             bool preserveBackslash: false}) {
     return _HeaderValue.parse(value,
                               parameterSeparator: parameterSeparator,
+                              valueSeparator: valueSeparator,
                               preserveBackslash: preserveBackslash);
   }
 
@@ -588,12 +742,41 @@ abstract class HttpSession implements Map {
  */
 abstract class ContentType implements HeaderValue {
   /**
+   * Content type for plain text using UTF-8 encoding.
+   *
+   *     text/plain; charset=utf-8
+   */
+  static final TEXT = new ContentType("text", "plain", charset: "utf-8");
+
+  /**
+   *  Content type for HTML using UTF-8 encoding.
+   *
+   *     text/html; charset=utf-8
+   */
+  static final HTML = new ContentType("text", "html", charset: "utf-8");
+
+  /**
+   *  Content type for JSON using UTF-8 encoding.
+   *
+   *     application/json; charset=utf-8
+   */
+  static final JSON = new ContentType("application", "json", charset: "utf-8");
+
+  /**
+   *  Content type for binary data.
+   *
+   *     application/octet-stream
+   */
+  static final BINARY = new ContentType("application", "octet-stream");
+
+  /**
    * Creates a new content type object setting the primary type and
    * sub type. The charset and additional parameters can also be set
    * using [charset] and [parameters]. If charset is passed and
    * [parameters] contains charset as well the passed [charset] will
-   * override the value in parameters. Keys and values passed in
-   * parameters will be converted to lower case.
+   * override the value in parameters. Keys passed in parameters will be
+   * converted to lower case. The `charset` entry, whether passed as `charset`
+   * or in `parameters`, will have its value converted to lower-case.
    */
   factory ContentType(String primaryType,
                       String subType,
@@ -689,6 +872,8 @@ abstract class Cookie {
 
   /**
    * Creates a new cookie optionally setting the name and value.
+   *
+   * By default the value of `httpOnly` will be set to `true`.
    */
   factory Cookie([String name, String value]) => new _Cookie(name, value);
 
@@ -718,22 +903,22 @@ abstract class Cookie {
  * package, which makes working with the low-level
  * dart:io HTTP server subsystem easier.
  *
- * HttpRequest objects are generated by an [HttpServer],
+ * `HttpRequest` objects are generated by an [HttpServer],
  * which listens for HTTP requests on a specific host and port.
  * For each request received, the HttpServer, which is a [Stream],
- * generates an HttpRequest object and adds it to the stream.
+ * generates an `HttpRequest` object and adds it to the stream.
  *
- * An HttpRequest object delivers the body content of the request
- * as a stream of bytes.
+ * An `HttpRequest` object delivers the body content of the request
+ * as a stream of byte lists.
  * The object also contains information about the request,
  * such as the method, URI, and headers.
  *
  * In the following code, an HttpServer listens
- * for HTTP requests and, within the callback function,
- * uses the HttpRequest object's `method` property to dispatch requests.
+ * for HTTP requests. When the server receives a request,
+ * it uses the HttpRequest object's `method` property to dispatch requests.
  *
  *     final HOST = InternetAddress.LOOPBACK_IP_V4;
- *     final PORT = 4040;
+ *     final PORT = 80;
  *
  *     HttpServer.bind(HOST, PORT).then((_server) {
  *       _server.listen((HttpRequest request) {
@@ -748,28 +933,20 @@ abstract class Cookie {
  *       onError: handleError);    // listen() failed.
  *     }).catchError(handleError);
  *
- * Listen to the HttpRequest stream to handle the
- * data and be notified once the entire body is received.
- * An HttpRequest object contains an [HttpResponse] object,
- * to which the server can write its response.
- * For example, here's a skeletal callback function
- * that responds to a request:
+ * An HttpRequest object provides access to the associated [HttpResponse]
+ * object through the response property.
+ * The server writes its response to the body of the HttpResponse object.
+ * For example, here's a function that responds to a request:
  *
  *     void handleGetRequest(HttpRequest req) {
  *       HttpResponse res = req.response;
- *       var body = [];
- *       req.listen((List<int> buffer) => body.add(buffer),
- *         onDone: () {
- *           res.write('Received ${body.length} for request ');
- *           res.write(' ${req.method}: ${req.uri.path}');
- *           res.close();
- *         },
- *         onError: handleError);
+ *       res.write('Received request ${req.method}: ${req.uri.path}');
+ *       res.close();
  *     }
  */
 abstract class HttpRequest implements Stream<List<int>> {
   /**
-   * The content length of the request body (read-only).
+   * The content length of the request body.
    *
    * If the size of the request body is not known in advance,
    * this value is -1.
@@ -777,49 +954,51 @@ abstract class HttpRequest implements Stream<List<int>> {
   int get contentLength;
 
   /**
-   * The method, such as 'GET' or 'POST', for the request (read-only).
+   * The method, such as 'GET' or 'POST', for the request.
    */
   String get method;
 
   /**
-   * The URI for the request (read-only).
+   * The URI for the request.
    *
    * This provides access to the
-   * path, query string, and fragment identifier for the request.
+   * path and query string for the request.
    */
   Uri get uri;
 
   /**
-   * The requested URI for the request (read-only).
+   * The requested URI for the request.
    *
-   * The returend URI is reconstructed by using http-header fields, to access
+   * The returned URI is reconstructed by using http-header fields, to access
    * otherwise lost information, e.g. host and scheme.
    *
    * To reconstruct the scheme, first 'X-Forwarded-Proto' is checked, and then
    * falling back to server type.
    *
-   * To reconstruct the host, fisrt 'X-Forwarded-Host' is checked, then 'Host'
+   * To reconstruct the host, first 'X-Forwarded-Host' is checked, then 'Host'
    * and finally calling back to server.
    */
   Uri get requestedUri;
 
   /**
-   * The request headers (read-only).
+   * The request headers.
+   *
+   * The returned [HttpHeaders] are immutable.
    */
   HttpHeaders get headers;
 
   /**
-   * The cookies in the request, from the Cookie headers (read-only).
+   * The cookies in the request, from the Cookie headers.
    */
   List<Cookie> get cookies;
 
   /**
-   * The persistent connection state signaled by the client (read-only).
+   * The persistent connection state signaled by the client.
    */
   bool get persistentConnection;
 
   /**
-   * The client certificate of the client making the request (read-only).
+   * The client certificate of the client making the request.
    *
    * This value is null if the connection is not a secure TLS or SSL connection,
    * or if the server does not request a client certificate, or if the client
@@ -828,7 +1007,7 @@ abstract class HttpRequest implements Stream<List<int>> {
   X509Certificate get certificate;
 
   /**
-   * The session for the given request (read-only).
+   * The session for the given request.
    *
    * If the session is
    * being initialized by this call, [:isNew:] is true for the returned
@@ -839,12 +1018,12 @@ abstract class HttpRequest implements Stream<List<int>> {
 
   /**
    * The HTTP protocol version used in the request,
-   * either "1.0" or "1.1" (read-only).
+   * either "1.0" or "1.1".
    */
   String get protocolVersion;
 
   /**
-   * Information about the client connection (read-only).
+   * Information about the client connection.
    *
    * Returns [:null:] if the socket is not available.
    */
@@ -852,7 +1031,7 @@ abstract class HttpRequest implements Stream<List<int>> {
 
   /**
    * The [HttpResponse] object, used for sending back the response to the
-   * client (read-only).
+   * client.
    *
    * If the [contentLength] of the body isn't 0, and the body isn't being read,
    * any write calls on the [HttpResponse] automatically drain the request
@@ -863,18 +1042,37 @@ abstract class HttpRequest implements Stream<List<int>> {
 
 
 /**
- * An [HttpResponse] represents the headers and data to be returned to
- * a client in response to an HTTP request.
+ * An HTTP response, which returns the headers and data
+ * from the server to the client in response to an HTTP request.
  *
- * This object has a number of properties for setting up the HTTP
- * header of the response. When the header has been set up the methods
- * from the [IOSink] can be used to write the actual body of the HTTP
- * response. When one of the [IOSink] methods is used for the
- * first time the request header is send. Calling any methods that
- * will change the header after it is sent will throw an exception.
+ * Every HttpRequest object provides access to the associated [HttpResponse]
+ * object through the `response` property.
+ * The server sends its response to the client by writing to the
+ * HttpResponse object.
  *
- * When writing string data through the [IOSink] the encoding used
- * will be determined from the "charset" parameter of the
+ * ## Writing the response
+ *
+ * This class implements [IOSink].
+ * After the header has been set up, the methods
+ * from IOSink, such as `writeln()`, can be used to write
+ * the body of the HTTP response.
+ * Use the `close()` method to close the response and send it to the client.
+ *
+ *     server.listen((HttpRequest request) {
+ *       request.response.write('Hello, world!');
+ *       request.response.close();
+ *     });
+ *
+ * When one of the IOSink methods is used for the
+ * first time, the request header is sent. Calling any methods that
+ * change the header after it is sent throws an exception.
+ *
+ * ## Setting the headers
+ *
+ * The HttpResponse object has a number of properties for setting up
+ * the HTTP headers of the response.
+ * When writing string data through the IOSink, the encoding used
+ * is determined from the "charset" parameter of the
  * "Content-Type" header.
  *
  *     HttpResponse response = ...
@@ -889,8 +1087,8 @@ abstract class HttpRequest implements Stream<List<int>> {
  *     response.headers.add(HttpHeaders.CONTENT_TYPE, "text/plain");
  *     response.write(...);  // Strings written will be ISO-8859-1 encoded.
  *
- * If an unsupported encoding is used an exception will be thrown if
- * using one of the write methods taking a string.
+ * An exception is thrown if you use the `write()` method
+ * while an unsupported content-type is set.
  */
 abstract class HttpResponse implements IOSink {
   // TODO(ajohnsen): Add documentation of how to pipe a file to the response.
@@ -906,12 +1104,20 @@ abstract class HttpResponse implements IOSink {
    * the official HTTP status codes use the fields from
    * [HttpStatus]. If no status code is explicitly set the default
    * value [HttpStatus.OK] is used.
+   *
+   * The status code must be set before the body is written
+   * to. Setting the status code after writing to the response body or
+   * closing the response will throw a `StateError`.
    */
   int statusCode;
 
   /**
    * Gets and sets the reason phrase. If no reason phrase is explicitly
    * set a default reason phrase is provided.
+   *
+   * The reason phrase must be set before the body is written
+   * to. Setting the reason phrase after writing to the response body
+   * or closing the response will throw a `StateError`.
    */
   String reasonPhrase;
 
@@ -935,7 +1141,20 @@ abstract class HttpResponse implements IOSink {
   Duration deadline;
 
   /**
+   * Get or set if the [HttpResponse] should buffer output.
+   *
+   * Default value is `true`.
+   *
+   * __Note__: Disabling buffering of the output can result in very poor
+   * performance, when writing many small chunks.
+   */
+  bool bufferOutput;
+
+  /**
    * Returns the response headers.
+   *
+   * The response headers can be modified until the response body is
+   * written to or closed. After that they become immutable.
    */
   HttpHeaders get headers;
 
@@ -966,8 +1185,12 @@ abstract class HttpResponse implements IOSink {
    *
    * This is normally used when a HTTP upgrade request is received
    * and the communication should continue with a different protocol.
+   *
+   * If [writeHeaders] is `true`, the status line and [headers] will be written
+   * to the socket before it's detached. If `false`, the socket is detached
+   * immediately, without any data written to the socket. Default is `true`.
    */
-  Future<Socket> detachSocket();
+  Future<Socket> detachSocket({bool writeHeaders: true});
 
   /**
    * Gets information about the client connection. Returns [:null:] if the
@@ -981,57 +1204,85 @@ abstract class HttpResponse implements IOSink {
  * A client that receives content, such as web pages, from
  * a server using the HTTP protocol.
  *
- * HttpClient contains a number of methods to send a HTTP request
- * to a HTTP server and receive a HTTP response back.
+ * HttpClient contains a number of methods to send an [HttpClientRequest]
+ * to an Http server and receive an [HttpClientResponse] back.
+ * For example, you can use the [get], [getUrl], [post], and [postUrl] methods
+ * for GET and POST requests, respectively.
  *
- * This is a two-step process, triggered by two futures. When the
- * first future completes with a [HttpClientRequest] the underlying
- * network connection has been established, but no data has yet been
- * sent. The HTTP headers and body can be set on the request, and
- * [:close:] is called to sent it to the server.
+ * ## Making a simple GET request: an example
  *
- * The second future, which is returned by [:close:], completes with
- * an [HttpClientResponse] object when the response is received from
- * the server. This object contains the headers and body of the
- * response.
-
- * The future for [HttpClientRequest] is created by methods such as
- * [getUrl] and [open].
+ * A `getUrl` request is a two-step process, triggered by two [Future]s.
+ * When the first future completes with a [HttpClientRequest], the underlying
+ * network connection has been established, but no data has been sent.
+ * In the callback function for the first future, the HTTP headers and body
+ * can be set on the request. Either the first write to the request object
+ * or a call to [close] sends the request to the server.
  *
- * When the HTTP response is ready a [HttpClientResponse] object is
- * provided which provides access to the headers and body of the response. The
- * body is available as a stream implemented by [HttpClientResponse].
- * If a body is present, it must be read. Otherwise, it'll lead to a resource
+ * When the HTTP response is received from the server,
+ * the second future, which is returned by close,
+ * completes with an [HttpClientResponse] object.
+ * This object provides access to the headers and body of the response.
+ * The body is available as a stream implemented by HttpClientResponse.
+ * If a body is present, it must be read. Otherwise, it leads to resource
  * leaks. Consider using [HttpClientResponse.drain] if the body is unused.
  *
  *     HttpClient client = new HttpClient();
  *     client.getUrl(Uri.parse("http://www.example.com/"))
  *         .then((HttpClientRequest request) {
- *           // Prepare the request then call close on it to send it.
+ *           // Optionally set up headers...
+ *           // Optionally write to the request object...
+ *           // Then call close.
+ *           ...
  *           return request.close();
  *         })
  *         .then((HttpClientResponse response) {
- *          // Process the response.
+ *           // Process the response.
+ *           ...
  *         });
  *
- * All [HttpClient] requests set the following header by default:
+ * The future for [HttpClientRequest] is created by methods such as
+ * [getUrl] and [open].
+ *
+ * ## HTTPS connections
+ *
+ * An HttpClient can make HTTPS requests, connecting to a server using
+ * the TLS (SSL) secure networking protocol. Calling [getUrl] with an
+ * https: scheme will work automatically, if the server's certificate is
+ * signed by a root CA (certificate authority) on the default list of
+ * well-known trusted CAs, compiled by Mozilla.
+ *
+ * To add a custom trusted certificate authority, or to send a client
+ * certificate to servers that request one, pass a [SecurityContext] object
+ * as the optional [context] argument to the `HttpClient` constructor.
+ * The desired security options can be set on the [SecurityContext] object.
+ *
+ * ## Headers
+ *
+ * All HttpClient requests set the following header by default:
  *
  *     Accept-Encoding: gzip
  *
  * This allows the HTTP server to use gzip compression for the body if
  * possible. If this behavior is not desired set the
- * "Accept-Encoding" header to something else.
+ * `Accept-Encoding` header to something else.
+ * To turn off gzip compression of the response, clear this header:
  *
- * The [HttpClient] supports persistent connections and caches network
- * connections to reuse then for multiple requests whenever
+ *      request.headers.removeAll(HttpHeaders.ACCEPT_ENCODING)
+ *
+ * ## Closing the HttpClient
+ *
+ * The HttpClient supports persistent connections and caches network
+ * connections to reuse them for multiple requests whenever
  * possible. This means that network connections can be kept open for
- * some time after a request have completed. Use [:HttpClient.close:]
- * to force shut down the [HttpClient] object and close the idle
+ * some time after a request has completed. Use HttpClient.close
+ * to force the HttpClient object to shut down and to close the idle
  * network connections.
+ *
+ * ## Turning proxies on and off
  *
  * By default the HttpClient uses the proxy configuration available
  * from the environment, see [findProxyFromEnvironment]. To turn off
- * the use of proxies all together set the [findProxy] property to
+ * the use of proxies set the [findProxy] property to
  * [:null:].
  *
  *     HttpClient client = new HttpClient();
@@ -1048,6 +1299,46 @@ abstract class HttpClient {
   Duration idleTimeout;
 
   /**
+   * Get and set the maximum number of live connections, to a single host.
+   *
+   * Increasing this number may lower performance and take up unwanted
+   * system resources.
+   *
+   * To disable, set to `null`.
+   *
+   * Default is `null`.
+   */
+  int maxConnectionsPerHost;
+
+  /**
+   * Get and set whether the body of a response will be automatically
+   * uncompressed.
+   *
+   * The body of an HTTP response can be compressed. In most
+   * situations providing the un-compressed body is most
+   * convenient. Therefore the default behavior is to un-compress the
+   * body. However in some situations (e.g. implementing a transparent
+   * proxy) keeping the uncompressed stream is required.
+   *
+   * NOTE: Headers in from the response is never modified. This means
+   * that when automatic un-compression is turned on the value of the
+   * header `Content-Length` will reflect the length of the original
+   * compressed body. Likewise the header `Content-Encoding` will also
+   * have the original value indicating compression.
+   *
+   * NOTE: Automatic un-compression is only performed if the
+   * `Content-Encoding` header value is `gzip`.
+   *
+   * This value affects all responses produced by this client after the
+   * value is changed.
+   *
+   * To disable, set to `false`.
+   *
+   * Default is `true`.
+   */
+  bool autoUncompress;
+
+  /**
    * Set and get the default value of the `User-Agent` header for all requests
    * generated by this [HttpClient]. The default value is
    * `Dart/<version> (dart:io)`.
@@ -1057,14 +1348,15 @@ abstract class HttpClient {
    */
   String userAgent;
 
-  factory HttpClient() => new _HttpClient();
+  factory HttpClient({SecurityContext context}) => new _HttpClient(context);
 
   /**
    * Opens a HTTP connection.
    *
    * The HTTP method to use is specified in [method], the server is
    * specified using [host] and [port], and the path (including
-   * possible fragment and query) is specified using [path].
+   * a possible query) is specified using [path].
+   * The path may also contain a URI fragment, which will be ignored.
    *
    * The `Host` header for the request will be set to the value
    * [host]:[port]. This can be overridden through the
@@ -1103,7 +1395,7 @@ abstract class HttpClient {
    * Opens a HTTP connection using the GET method.
    *
    * The server is specified using [host] and [port], and the path
-   * (including possible fragment and query) is specified using
+   * (including a possible query) is specified using
    * [path].
    *
    * See [open] for details.
@@ -1123,7 +1415,7 @@ abstract class HttpClient {
    * Opens a HTTP connection using the POST method.
    *
    * The server is specified using [host] and [port], and the path
-   * (including possible fragment and query) is specified using
+   * (including a possible query) is specified using
    * [path].
    *
    * See [open] for details.
@@ -1138,6 +1430,82 @@ abstract class HttpClient {
    * See [openUrl] for details.
    */
   Future<HttpClientRequest> postUrl(Uri url);
+
+  /**
+   * Opens a HTTP connection using the PUT method.
+   *
+   * The server is specified using [host] and [port], and the path
+   * (including a possible query) is specified using [path].
+   *
+   * See [open] for details.
+   */
+  Future<HttpClientRequest> put(String host, int port, String path);
+
+  /**
+   * Opens a HTTP connection using the PUT method.
+   *
+   * The URL to use is specified in [url].
+   *
+   * See [openUrl] for details.
+   */
+  Future<HttpClientRequest> putUrl(Uri url);
+
+  /**
+   * Opens a HTTP connection using the DELETE method.
+   *
+   * The server is specified using [host] and [port], and the path
+   * (including s possible query) is specified using [path].
+   *
+   * See [open] for details.
+   */
+  Future<HttpClientRequest> delete(String host, int port, String path);
+
+  /**
+   * Opens a HTTP connection using the DELETE method.
+   *
+   * The URL to use is specified in [url].
+   *
+   * See [openUrl] for details.
+   */
+  Future<HttpClientRequest> deleteUrl(Uri url);
+
+  /**
+   * Opens a HTTP connection using the PATCH method.
+   *
+   * The server is specified using [host] and [port], and the path
+   * (including a possible query) is specified using [path].
+   *
+   * See [open] for details.
+   */
+  Future<HttpClientRequest> patch(String host, int port, String path);
+
+  /**
+   * Opens a HTTP connection using the PATCH method.
+   *
+   * The URL to use is specified in [url].
+   *
+   * See [openUrl] for details.
+   */
+  Future<HttpClientRequest> patchUrl(Uri url);
+
+  /**
+   * Opens a HTTP connection using the HEAD method.
+   *
+   * The server is specified using [host] and [port], and the path
+   * (including a possible query) is specified using [path].
+   *
+   * See [open] for details.
+   */
+  Future<HttpClientRequest> head(String host, int port, String path);
+
+  /**
+   * Opens a HTTP connection using the HEAD method.
+   *
+   * The URL to use is specified in [url].
+   *
+   * See [openUrl] for details.
+   */
+  Future<HttpClientRequest> headUrl(Uri url);
 
   /**
    * Sets the function to be called when a site is requesting
@@ -1292,7 +1660,7 @@ abstract class HttpClient {
    *
    * If a bad certificate is received on a connection attempt, the library calls
    * the function that was the value of badCertificateCallback at the time
-   * the the request is made, even if the value of badCertificateCallback
+   * the request is made, even if the value of badCertificateCallback
    * has changed since then.
    */
   set badCertificateCallback(bool callback(X509Certificate cert,
@@ -1316,15 +1684,16 @@ abstract class HttpClient {
 /**
  * HTTP request for a client connection.
  *
- * This object has a number of properties for setting up the HTTP
- * header of the request. When the header has been set up the methods
- * from the [IOSink] can be used to write the actual body of the HTTP
- * request. When one of the [IOSink] methods is used for the first
- * time the request header is send. Calling any methods that will
- * change the header after it is sent will throw an exception.
+ * To set up a request, set the headers using the headers property
+ * provided in this class and write the data to the body of the request.
+ * HttpClientRequest is an [IOSink]. Use the methods from IOSink,
+ * such as writeCharCode(), to write the body of the HTTP
+ * request. When one of the IOSink methods is used for the first
+ * time, the request header is sent. Calling any methods that
+ * change the header after it is sent throws an exception.
  *
  * When writing string data through the [IOSink] the
- * encoding used will be determined from the "charset" parameter of
+ * encoding used is determined from the "charset" parameter of
  * the "Content-Type" header.
  *
  *     HttpClientRequest request = ...
@@ -1332,19 +1701,20 @@ abstract class HttpClient {
  *         = new ContentType("application", "json", charset: "utf-8");
  *     request.write(...);  // Strings written will be UTF-8 encoded.
  *
- * If no charset is provided the default of ISO-8859-1 (Latin 1) will
+ * If no charset is provided the default of ISO-8859-1 (Latin 1) is
  * be used.
  *
  *     HttpClientRequest request = ...
  *     request.headers.add(HttpHeaders.CONTENT_TYPE, "text/plain");
  *     request.write(...);  // Strings written will be ISO-8859-1 encoded.
  *
- * If an unsupported encoding is used an exception will be thrown if
- * using one of the write methods taking a string.
+ * An exception is thrown if you use an unsupported encoding and the
+ * `write()` method being used takes a string parameter.
  */
 abstract class HttpClientRequest implements IOSink {
   /**
    * Gets and sets the requested persistent connection state.
+   *
    * The default value is [:true:].
    */
   bool persistentConnection;
@@ -1396,7 +1766,21 @@ abstract class HttpClientRequest implements IOSink {
   int contentLength;
 
   /**
-   * Returns the request headers.
+   * Get or set if the [HttpClientRequest] should buffer output.
+   *
+   * Default value is `true`.
+   *
+   * __Note__: Disabling buffering of the output can result in very poor
+   * performance, when writing many small chunks.
+   */
+  bool bufferOutput;
+
+  /**
+   * Returns the client request headers.
+   *
+   * The client request headers can be modified until the client
+   * request body is written to or closed. After that they become
+   * immutable.
    */
   HttpHeaders get headers;
 
@@ -1426,29 +1810,55 @@ abstract class HttpClientRequest implements IOSink {
 
 
 /**
- * HTTP response for a client connection. The [HttpClientResponse] is a
- * [Stream] of the body content of the response. Listen to the body to handle
- * the data and be notified once the entire body is received.
+ * HTTP response for a client connection.
+ *
+ * The body of a [HttpClientResponse] object is a
+ * [Stream] of data from the server. Listen to the body to handle
+ * the data and be notified when the entire body is received.
+ *
+ *     new HttpClient().get('localhost', 80, '/file.txt')
+ *          .then((HttpClientRequest request) => request.close())
+ *          .then((HttpClientResponse response) {
+ *            response.transform(UTF8.decoder).listen((contents) {
+ *              // handle data
+ *            });
+ *          });
  */
 abstract class HttpClientResponse implements Stream<List<int>> {
   /**
    * Returns the status code.
+   *
+   * The status code must be set before the body is written
+   * to. Setting the status code after writing to the body will throw
+   * a `StateError`.
    */
   int get statusCode;
 
   /**
    * Returns the reason phrase associated with the status code.
+   *
+   * The reason phrase must be set before the body is written
+   * to. Setting the reason phrase after writing to the body will throw
+   * a `StateError`.
    */
   String get reasonPhrase;
 
   /**
    * Returns the content length of the response body. Returns -1 if the size of
    * the response body is not known in advance.
+   *
+   * If the content length needs to be set, it must be set before the
+   * body is written to. Setting the reason phrase after writing to
+   * the body will throw a `StateError`.
    */
   int get contentLength;
 
   /**
    * Gets the persistent connection state returned by the server.
+   *
+   * if the persistent connection state needs to be set, it must be
+   * set before the body is written to. Setting the reason phrase
+   * after writing to the body will throw a `StateError`.
    */
   bool get persistentConnection;
 
@@ -1489,7 +1899,9 @@ abstract class HttpClientResponse implements Stream<List<int>> {
 
 
   /**
-   * Returns the response headers.
+   * Returns the client response headers.
+   *
+   * The client response headers are immutable.
    */
   HttpHeaders get headers;
 

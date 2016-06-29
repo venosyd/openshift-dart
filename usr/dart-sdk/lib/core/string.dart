@@ -86,9 +86,8 @@ part of dart.core;
  * Also see:
 
  * * [Dart Cookbook](https://www.dartlang.org/docs/cookbook/#strings)
- * for String examples and recipes.
- * * [Dart Up and Running]
- * (https://www.dartlang.org/docs/dart-up-and-running/contents/ch03.html#ch03-strings-and-regular-expressions)
+ *   for String examples and recipes.
+ * * [Dart Up and Running](https://www.dartlang.org/docs/dart-up-and-running/ch03.html#strings-and-regular-expressions)
  */
 abstract class String implements Comparable<String>, Pattern {
   /**
@@ -105,8 +104,14 @@ abstract class String implements Comparable<String>, Pattern {
    *     var clef = new String.fromCharCodes([0x1D11E]);
    *     clef.codeUnitAt(0); // 0xD834
    *     clef.codeUnitAt(1); // 0xDD1E
+   *
+   * If [start] and [end] is provided, only the values of [charCodes]
+   * at positions from `start` to, but not including, `end`, are used.
+   * The `start` and `end` values must satisfy
+   * `0 <= start <= end <= charCodes.length`.
    */
-  external factory String.fromCharCodes(Iterable<int> charCodes);
+  external factory String.fromCharCodes(Iterable<int> charCodes,
+                                        [int start = 0, int end]);
 
   /**
    * Allocates a new String for the specified [charCode].
@@ -116,13 +121,9 @@ abstract class String implements Comparable<String>, Pattern {
    * the code units form a surrogate pair. See documentation for
    * [fromCharCodes].
    *
-   * Creating a String with half of a surrogate pair is legal but generally
-   * discouraged.
+   * Creating a String with half of a surrogate pair is allowed.
    */
-  factory String.fromCharCode(int charCode) {
-    List<int> charCodes = new List<int>.filled(1, charCode);
-    return new String.fromCharCodes(charCodes);
-  }
+  external factory String.fromCharCode(int charCode);
 
   /**
    * Returns the string value of the environment declaration [name].
@@ -184,7 +185,15 @@ abstract class String implements Comparable<String>, Pattern {
   int get length;
 
   /**
-   * Returns true if the two strings are equal. False, otherwise.
+   * Returns a hash code derived from the code units of the string.
+   *
+   * This is compatible with [operator==]. Strings with the same sequence
+   * of code units have the same hash code.
+   */
+  int get hashCode;
+
+  /**
+   * Returns true if other is a `String` with the same sequence of code units.
    *
    * This method compares each individual code unit of the strings.
    * It does not check for Unicode equivalence.
@@ -197,7 +206,7 @@ abstract class String implements Comparable<String>, Pattern {
    * a single rune), whereas the second string encodes it as 'e' with the
    * combining accent character '◌́'.
    */
-  bool operator ==(var other);
+  bool operator ==(Object other);
 
   /**
    * Returns true if this string ends with [other]. For example:
@@ -290,7 +299,7 @@ abstract class String implements Comparable<String>, Pattern {
   String substring(int startIndex, [int endIndex]);
 
   /**
-   * Removes leading and trailing whitespace from a string.
+   * Returns the string without any leading and trailing whitespace.
    *
    * If the string contains leading or trailing whitespace, a new string with no
    * leading and no trailing whitespace is returned:
@@ -326,6 +335,67 @@ abstract class String implements Comparable<String>, Pattern {
   String trim();
 
   /**
+   * Returns the string without any leading whitespace.
+   *
+   * As [trim], but only removes leading whitespace.
+   */
+  String trimLeft();
+
+  /**
+   * Returns the string without any trailing whitespace.
+   *
+   * As [trim], but only removes trailing whitespace.
+   */
+  String trimRight();
+
+  /**
+   * Creates a new string by concatenating this string with itself a number
+   * of times.
+   *
+   * The result of `str * n` is equivalent to
+   * `str + str + ...`(n times)`... + str`.
+   *
+   * Returns an empty string if [times] is zero or negative.
+   */
+  String operator *(int times);
+
+  /**
+   * Pads this string on the left if it is shorther than [width].
+   *
+   * Return a new string that prepends [padding] onto this string
+   * one time for each position the length is less than [width].
+   *
+   * If [width] is already smaller than or equal to `this.length`,
+   * no padding is added. A negative `width` is treated as zero.
+   *
+   * If [padding] has length different from 1, the result will not
+   * have length `width`. This may be useful for cases where the
+   * padding is a longer string representing a single character, like
+   * `"&nbsp;"` or `"\u{10002}`".
+   * In that case, the user should make sure that `this.length` is
+   * the correct measure of the strings length.
+   */
+  String padLeft(int width, [String padding = ' ']);
+
+  /**
+   * Pads this string on the right if it is shorther than [width].
+   *
+   * Return a new string that appends [padding] after this string
+   * one time for each position the length is less than [width].
+   *
+   * If [width] is already smaller than or equal to `this.length`,
+   * no padding is added. A negative `width` is treated as zero.
+   *
+   * If [padding] has length different from 1, the result will not
+   * have length `width`. This may be useful for cases where the
+   * padding is a longer string representing a single character, like
+   * `"&nbsp;"` or `"\u{10002}`".
+   * In that case, the user should make sure that `this.length` is
+   * the correct measure of the strings length.
+   */
+  String padRight(int width, [String padding = ' ']);
+
+  /**
    * Returns true if this string contains a match of [other]:
    *
    *     var string = 'Dart strings';
@@ -343,12 +413,27 @@ abstract class String implements Comparable<String>, Pattern {
   bool contains(Pattern other, [int startIndex = 0]);
 
   /**
-   * Returns a new string in which  the first occurence of [from] in this string
-   * is replaced with [to]:
+   * Returns a new string in which the first occurence of [from] in this string
+   * is replaced with [to], starting from [startIndex]:
    *
    *     '0.0001'.replaceFirst(new RegExp(r'0'), ''); // '.0001'
+   *     '0.0001'.replaceFirst(new RegExp(r'0'), '7', 1); // '0.7001'
    */
-  String replaceFirst(Pattern from, String to);
+  String replaceFirst(Pattern from, String to, [int startIndex = 0]);
+
+  /**
+   * Replace the first occurence of [from] in this string.
+   *
+   * Returns a new string, which is this string
+   * except that the first match of [pattern], starting from [startIndex],
+   * is replaced by the result of calling [replace] with the match object.
+   *
+   * If the value returned by calling `replace` is not a [String], it
+   * is converted to a `String` using its `toString` method, which must
+   * then return a string.
+   */
+  String replaceFirstMapped(Pattern from, String replace(Match match),
+                            [int startIndex = 0]);
 
   /**
    * Replaces all substrings that match [from] with [replace].
@@ -391,11 +476,43 @@ abstract class String implements Comparable<String>, Pattern {
   String replaceAllMapped(Pattern from, String replace(Match match));
 
   /**
-   * Splits the string at matches of [pattern]. Returns
-   * a list of substrings.
+   * Replaces the substring from [start] to [end] with [replacement].
    *
-   * Splitting with an empty string pattern (`''`) splits at UTF-16 code unit
-   * boundaries and not at rune boundaries:
+   * Returns a new string equivalent to:
+   *
+   *     this.substring(0, start) + replacement + this.substring(end)
+   *
+   * The [start] and [end] indices must specify a valid range of this string.
+   * That is `0 <= start <= end <= this.length`.
+   * If [end] is `null`, it defaults to [length].
+   */
+  String replaceRange(int start, int end, String replacement);
+
+  /**
+   * Splits the string at matches of [pattern] and returns a list of substrings.
+   *
+   * Finds all the matches of `pattern` in this string,
+   * and returns the list of the substrings between the matches.
+   *
+   *     var string = "Hello world!";
+   *     string.split(" ");                      // ['Hello', 'world!'];
+   *
+   * Empty matches at the beginning and end of the strings are ignored,
+   * and so are empty matches right after another match.
+   *
+   *     var string = "abba";
+   *     string.split(new RegExp(r"b*"));        // ['a', 'a']
+   *                                             // not ['', 'a', 'a', '']
+   *
+   * If this string is empty, the result is an empty list if `pattern` matches
+   * the empty string, and it is `[""]` if the pattern doesn't match.
+   *
+   *     var string = '';
+   *     string.split('');                       // []
+   *     string.split("a");                      // ['']
+   *
+   * Splitting with an empty pattern splits the string into single-code unit
+   * strings.
    *
    *     var string = 'Pub';
    *     string.split('');                       // ['P', 'u', 'b']
@@ -404,15 +521,18 @@ abstract class String implements Comparable<String>, Pattern {
    *       return new String.fromCharCode(unit);
    *     }).toList();                            // ['P', 'u', 'b']
    *
+   * Splitting happens at UTF-16 code unit boundaries,
+   * and not at rune boundaries:
+   *
    *     // String made up of two code units, but one rune.
    *     string = '\u{1D11E}';
-   *     string.split('').length;                 // 2
+   *     string.split('').length;                 // 2 surrogate values
    *
-   * You should [map] the runes unless you are certain that the string is in
-   * the basic multilingual plane (meaning that each code unit represents a
-   * rune):
+   * To get a list of strings containing the individual runes of a string,
+   * you should not use split. You can instead map each rune to a string
+   * as follows:
    *
-   *     string.runes.map((rune) => new String.fromCharCode(rune));
+   *     string.runes.map((rune) => new String.fromCharCode(rune)).toList();
    */
   List<String> split(Pattern pattern);
 
@@ -482,7 +602,7 @@ abstract class String implements Comparable<String>, Pattern {
 /**
  * The runes (integer Unicode code points) of a [String].
  */
-class Runes extends IterableBase<int> {
+class Runes extends Iterable<int> {
   final String string;
   Runes(this.string);
 
@@ -546,14 +666,11 @@ class RuneIterator implements BidirectionalIterator<int> {
    * and a [movePrevious] will use the rune ending just before [index] as the
    * the current value.
    *
-   * It is an error if the [index] position is in the middle of a surrogate
-   * pair.
+   * The [index] position must not be in the middle of a surrogate pair.
    */
   RuneIterator.at(String string, int index)
       : string = string, _position = index, _nextPosition = index {
-    if (index < 0 || index > string.length) {
-      throw new RangeError.range(index, 0, string.length);
-    }
+    RangeError.checkValueInInterval(index, 0, string.length);
     _checkSplitSurrogate(index);
   }
 
@@ -583,9 +700,7 @@ class RuneIterator implements BidirectionalIterator<int> {
    * Setting the position to the end of then string will set [current] to null.
    */
   void set rawIndex(int rawIndex) {
-    if (rawIndex >= string.length) {
-      throw new RangeError.range(rawIndex, 0, string.length - 1);
-    }
+    RangeError.checkValidIndex(rawIndex, string, "rawIndex");
     reset(rawIndex);
     moveNext();
   }
@@ -601,9 +716,7 @@ class RuneIterator implements BidirectionalIterator<int> {
    * is an error. So is setting it in the middle of a surrogate pair.
    */
   void reset([int rawIndex = 0]) {
-    if (rawIndex < 0 || rawIndex > string.length) {
-      throw new RangeError.range(rawIndex, 0, string.length);
-    }
+    RangeError.checkValueInInterval(rawIndex, 0, string.length, "rawIndex");
     _checkSplitSurrogate(rawIndex);
     _position = _nextPosition = rawIndex;
     _currentCodePoint = null;

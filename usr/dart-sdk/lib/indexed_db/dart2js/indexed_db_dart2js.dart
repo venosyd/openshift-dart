@@ -77,7 +77,7 @@ import 'dart:html';
 import 'dart:html_common';
 import 'dart:_native_typed_data';
 import 'dart:typed_data';
-import 'dart:_js_helper' show Creates, Returns, JSName, Null;
+import 'dart:_js_helper' show Creates, Returns, JSName, Native;
 import 'dart:_foreign_helper' show JS;
 import 'dart:_interceptors' show Interceptor, JSExtendableArray;
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
@@ -213,7 +213,8 @@ const _annotation_Returns_IDBKey = const Returns(_idbKey);
 
 @DomName('IDBCursor')
 @Unstable()
-class Cursor extends Interceptor native "IDBCursor" {
+@Native("IDBCursor")
+class Cursor extends Interceptor {
   @DomName('IDBCursor.delete')
   Future delete() {
    try {
@@ -264,11 +265,16 @@ class Cursor extends Interceptor native "IDBCursor" {
   @DocsEditable()
   @Creates('Null')
   @Returns('ObjectStore|Index|Null')
-  final dynamic source;
+  final Object source;
 
   @DomName('IDBCursor.advance')
   @DocsEditable()
   void advance(int count) native;
+
+  @DomName('IDBCursor.continuePrimaryKey')
+  @DocsEditable()
+  @Experimental() // untriaged
+  void continuePrimaryKey(Object key, Object primaryKey) native;
 
   @JSName('delete')
   @DomName('IDBCursor.delete')
@@ -295,7 +301,8 @@ class Cursor extends Interceptor native "IDBCursor" {
 @DocsEditable()
 @DomName('IDBCursorWithValue')
 @Unstable()
-class CursorWithValue extends Cursor native "IDBCursorWithValue" {
+@Native("IDBCursorWithValue")
+class CursorWithValue extends Cursor {
   // To suppress missing implicit constructor warnings.
   factory CursorWithValue._() { throw new UnsupportedError("Not supported"); }
 
@@ -325,7 +332,8 @@ class CursorWithValue extends Cursor native "IDBCursorWithValue" {
 @SupportedBrowser(SupportedBrowser.IE, '10')
 @Experimental()
 @Unstable()
-class Database extends EventTarget native "IDBDatabase" {
+@Native("IDBDatabase")
+class Database extends EventTarget {
   @DomName('IDBDatabase.createObjectStore')
   @DocsEditable()
   ObjectStore createObjectStore(String name,
@@ -372,7 +380,7 @@ class Database extends EventTarget native "IDBDatabase" {
     List storeNames_1 = convertDartToNative_StringArray(storeNames);
     return _transaction(storeNames_1, mode);
   }
-  
+
   Transaction transactionStores(DomStringList storeNames, String mode) {
     if (mode != 'readonly' && mode != 'readwrite') {
       throw new ArgumentError(mode);
@@ -442,7 +450,7 @@ class Database extends EventTarget native "IDBDatabase" {
   @DocsEditable()
   @Creates('int|String|Null')
   @Returns('int|String|Null')
-  final dynamic version;
+  final Object version;
 
   @DomName('IDBDatabase.close')
   @DocsEditable()
@@ -503,7 +511,8 @@ class Database extends EventTarget native "IDBDatabase" {
 @SupportedBrowser(SupportedBrowser.IE, '10')
 @Experimental()
 @Unstable()
-class IdbFactory extends Interceptor native "IDBFactory" {
+@Native("IDBFactory")
+class IdbFactory extends Interceptor {
   /**
    * Checks to see if Indexed DB is supported on the current platform.
    */
@@ -544,14 +553,14 @@ class IdbFactory extends Interceptor native "IDBFactory" {
 
   @DomName('IDBFactory.deleteDatabase')
   Future<IdbFactory> deleteDatabase(String name,
-      {void onBlocked(Event)}) {
+      {void onBlocked(Event e)}) {
     try {
       var request = _deleteDatabase(name);
 
       if (onBlocked != null) {
         request.onBlocked.listen(onBlocked);
       }
-      var completer = new Completer.sync();
+      var completer = new Completer<IdbFactory>.sync();
       request.onSuccess.listen((e) {
         completer.complete(this);
       });
@@ -621,12 +630,13 @@ class IdbFactory extends Interceptor native "IDBFactory" {
  * Ties a request to a completer, so the completer is completed when it succeeds
  * and errors out when the request errors.
  */
-Future _completeRequest(Request request) {
-  var completer = new Completer.sync();
+Future/*<T>*/ _completeRequest/*<T>*/(Request request) {
+  var completer = new Completer/*<T>*/.sync();
   // TODO: make sure that completer.complete is synchronous as transactions
   // may be committed if the result is not processed immediately.
   request.onSuccess.listen((e) {
-    completer.complete(request.result);
+    var result = _cast/*<T>*/(request.result);
+    completer.complete(result);
   });
   request.onError.listen(completer.completeError);
   return completer.future;
@@ -638,7 +648,8 @@ Future _completeRequest(Request request) {
 
 @DomName('IDBIndex')
 @Unstable()
-class Index extends Interceptor native "IDBIndex" {
+@Native("IDBIndex")
+class Index extends Interceptor {
   @DomName('IDBIndex.count')
   Future<int> count([key_OR_range]) {
    try {
@@ -691,7 +702,8 @@ class Index extends Interceptor native "IDBIndex" {
     }
     var request;
     if (direction == null) {
-      request = _openCursor(key_OR_range);
+      // FIXME: Passing in "next" should be unnecessary.
+      request = _openCursor(key_OR_range, "next");
     } else {
       request = _openCursor(key_OR_range, direction);
     }
@@ -718,7 +730,8 @@ class Index extends Interceptor native "IDBIndex" {
     }
     var request;
     if (direction == null) {
-      request = _openKeyCursor(key_OR_range);
+      // FIXME: Passing in "next" should be unnecessary.
+      request = _openKeyCursor(key_OR_range, "next");
     } else {
       request = _openKeyCursor(key_OR_range, direction);
     }
@@ -731,7 +744,7 @@ class Index extends Interceptor native "IDBIndex" {
   @DomName('IDBIndex.keyPath')
   @DocsEditable()
   @annotation_Creates_SerializedScriptValue
-  final dynamic keyPath;
+  final Object keyPath;
 
   @DomName('IDBIndex.multiEntry')
   @DocsEditable()
@@ -762,6 +775,16 @@ class Index extends Interceptor native "IDBIndex" {
   @annotation_Creates_SerializedScriptValue
   Request _get(Object key) native;
 
+  @DomName('IDBIndex.getAll')
+  @DocsEditable()
+  @Experimental() // untriaged
+  Request getAll(Object range, [int maxCount]) native;
+
+  @DomName('IDBIndex.getAllKeys')
+  @DocsEditable()
+  @Experimental() // untriaged
+  Request getAllKeys(Object range, [int maxCount]) native;
+
   @JSName('getKey')
   @DomName('IDBIndex.getKey')
   @DocsEditable()
@@ -777,7 +800,7 @@ class Index extends Interceptor native "IDBIndex" {
   @Returns('Request')
   @Creates('Request')
   @Creates('Cursor')
-  Request _openCursor(Object key, [String direction]) native;
+  Request _openCursor(Object range, [String direction]) native;
 
   @JSName('openKeyCursor')
   @DomName('IDBIndex.openKeyCursor')
@@ -785,7 +808,7 @@ class Index extends Interceptor native "IDBIndex" {
   @Returns('Request')
   @Creates('Request')
   @Creates('Cursor')
-  Request _openKeyCursor(Object key, [String direction]) native;
+  Request _openKeyCursor(Object range, [String direction]) native;
 
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
@@ -795,7 +818,8 @@ class Index extends Interceptor native "IDBIndex" {
 
 @DomName('IDBKeyRange')
 @Unstable()
-class KeyRange extends Interceptor native "IDBKeyRange" {
+@Native("IDBKeyRange")
+class KeyRange extends Interceptor {
   @DomName('IDBKeyRange.only')
   factory KeyRange.only(/*Key*/ value) =>
       _KeyRangeFactoryProvider.createKeyRange_only(value);
@@ -863,7 +887,8 @@ class KeyRange extends Interceptor native "IDBKeyRange" {
 
 @DomName('IDBObjectStore')
 @Unstable()
-class ObjectStore extends Interceptor native "IDBObjectStore" {
+@Native("IDBObjectStore")
+class ObjectStore extends Interceptor {
 
   @DomName('IDBObjectStore.add')
   Future add(value, [key]) {
@@ -1007,7 +1032,7 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
   @DomName('IDBObjectStore.keyPath')
   @DocsEditable()
   @annotation_Creates_SerializedScriptValue
-  final dynamic keyPath;
+  final Object keyPath;
 
   @DomName('IDBObjectStore.name')
   @DocsEditable()
@@ -1028,8 +1053,8 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
       var key_2 = convertDartToNative_SerializedScriptValue(key);
       return _add_1(value_1, key_2);
     }
-    var value_3 = convertDartToNative_SerializedScriptValue(value);
-    return _add_2(value_3);
+    var value_1 = convertDartToNative_SerializedScriptValue(value);
+    return _add_2(value_1);
   }
   @JSName('add')
   @DomName('IDBObjectStore.add')
@@ -1058,41 +1083,21 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
 
   @DomName('IDBObjectStore.createIndex')
   @DocsEditable()
-  Index _createIndex(String name, keyPath, [Map options]) {
-    if ((keyPath is List<String> || keyPath == null) && options == null) {
-      List keyPath_1 = convertDartToNative_StringArray(keyPath);
-      return _createIndex_1(name, keyPath_1);
+  Index _createIndex(String name, Object keyPath, [Map options]) {
+    if (options != null) {
+      var options_1 = convertDartToNative_Dictionary(options);
+      return _createIndex_1(name, keyPath, options_1);
     }
-    if (options != null && (keyPath is List<String> || keyPath == null)) {
-      List keyPath_2 = convertDartToNative_StringArray(keyPath);
-      var options_3 = convertDartToNative_Dictionary(options);
-      return _createIndex_2(name, keyPath_2, options_3);
-    }
-    if ((keyPath is String || keyPath == null) && options == null) {
-      return _createIndex_3(name, keyPath);
-    }
-    if (options != null && (keyPath is String || keyPath == null)) {
-      var options_4 = convertDartToNative_Dictionary(options);
-      return _createIndex_4(name, keyPath, options_4);
-    }
-    throw new ArgumentError("Incorrect number or type of arguments");
+    return _createIndex_2(name, keyPath);
   }
   @JSName('createIndex')
   @DomName('IDBObjectStore.createIndex')
   @DocsEditable()
-  Index _createIndex_1(name, List keyPath) native;
+  Index _createIndex_1(name, keyPath, options) native;
   @JSName('createIndex')
   @DomName('IDBObjectStore.createIndex')
   @DocsEditable()
-  Index _createIndex_2(name, List keyPath, options) native;
-  @JSName('createIndex')
-  @DomName('IDBObjectStore.createIndex')
-  @DocsEditable()
-  Index _createIndex_3(name, String keyPath) native;
-  @JSName('createIndex')
-  @DomName('IDBObjectStore.createIndex')
-  @DocsEditable()
-  Index _createIndex_4(name, String keyPath, options) native;
+  Index _createIndex_2(name, keyPath) native;
 
   @JSName('delete')
   @DomName('IDBObjectStore.delete')
@@ -1111,6 +1116,16 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
   @annotation_Creates_SerializedScriptValue
   Request _get(Object key) native;
 
+  @DomName('IDBObjectStore.getAll')
+  @DocsEditable()
+  @Experimental() // untriaged
+  Request getAll(Object range, [int maxCount]) native;
+
+  @DomName('IDBObjectStore.getAllKeys')
+  @DocsEditable()
+  @Experimental() // untriaged
+  Request getAllKeys(Object range, [int maxCount]) native;
+
   @DomName('IDBObjectStore.index')
   @DocsEditable()
   Index index(String name) native;
@@ -1121,12 +1136,12 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
   @Returns('Request')
   @Creates('Request')
   @Creates('Cursor')
-  Request _openCursor(Object key, [String direction]) native;
+  Request _openCursor(Object range, [String direction]) native;
 
   @DomName('IDBObjectStore.openKeyCursor')
   @DocsEditable()
   @Experimental() // untriaged
-  Request openKeyCursor(Object range, String direction) native;
+  Request openKeyCursor(Object range, [String direction]) native;
 
   @DomName('IDBObjectStore.put')
   @DocsEditable()
@@ -1139,8 +1154,8 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
       var key_2 = convertDartToNative_SerializedScriptValue(key);
       return _put_1(value_1, key_2);
     }
-    var value_3 = convertDartToNative_SerializedScriptValue(value);
-    return _put_2(value_3);
+    var value_1 = convertDartToNative_SerializedScriptValue(value);
+    return _put_2(value_1);
   }
   @JSName('put')
   @DomName('IDBObjectStore.put')
@@ -1161,18 +1176,18 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
   /**
    * Helper for iterating over cursors in a request.
    */
-  static Stream<Cursor> _cursorStreamFromResult(Request request,
+  static Stream/*<T>*/ _cursorStreamFromResult/*<T extends Cursor>*/(Request request,
       bool autoAdvance) {
     // TODO: need to guarantee that the controller provides the values
     // immediately as waiting until the next tick will cause the transaction to
     // close.
-    var controller = new StreamController(sync: true);
+    var controller = new StreamController/*<T>*/(sync: true);
 
     //TODO: Report stacktrace once issue 4061 is resolved.
     request.onError.listen(controller.addError);
 
     request.onSuccess.listen((e) {
-      Cursor cursor = request.result;
+      var cursor = _cast/*<T>*/(request.result);
       if (cursor == null) {
         controller.close();
       } else {
@@ -1185,6 +1200,9 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
     return controller.stream;
   }
 }
+
+// ignore: STRONG_MODE_DOWN_CAST_COMPOSITE
+/*=To*/ _cast/*<To>*/(dynamic x) => x;
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
@@ -1193,7 +1211,8 @@ class ObjectStore extends Interceptor native "IDBObjectStore" {
 @DocsEditable()
 @DomName('IDBOpenDBRequest')
 @Unstable()
-class OpenDBRequest extends Request native "IDBOpenDBRequest,IDBVersionChangeRequest" {
+@Native("IDBOpenDBRequest,IDBVersionChangeRequest")
+class OpenDBRequest extends Request {
   // To suppress missing implicit constructor warnings.
   factory OpenDBRequest._() { throw new UnsupportedError("Not supported"); }
 
@@ -1235,7 +1254,8 @@ class OpenDBRequest extends Request native "IDBOpenDBRequest,IDBVersionChangeReq
 @DocsEditable()
 @DomName('IDBRequest')
 @Unstable()
-class Request extends EventTarget native "IDBRequest" {
+@Native("IDBRequest")
+class Request extends EventTarget {
   // To suppress missing implicit constructor warnings.
   factory Request._() { throw new UnsupportedError("Not supported"); }
 
@@ -1279,7 +1299,7 @@ class Request extends EventTarget native "IDBRequest" {
   @DomName('IDBRequest.source')
   @DocsEditable()
   @Creates('Null')
-  final dynamic source;
+  final Object source;
 
   @DomName('IDBRequest.transaction')
   @DocsEditable()
@@ -1302,7 +1322,8 @@ class Request extends EventTarget native "IDBRequest" {
 
 @DomName('IDBTransaction')
 @Unstable()
-class Transaction extends EventTarget native "IDBTransaction" {
+@Native("IDBTransaction")
+class Transaction extends EventTarget {
 
   /**
    * Provides a Future which will be completed once the transaction has
@@ -1377,6 +1398,13 @@ class Transaction extends EventTarget native "IDBTransaction" {
   @DocsEditable()
   final String mode;
 
+  @DomName('IDBTransaction.objectStoreNames')
+  @DocsEditable()
+  @Experimental() // untriaged
+  @Returns('DomStringList')
+  @Creates('DomStringList')
+  final List<String> objectStoreNames;
+
   @DomName('IDBTransaction.abort')
   @DocsEditable()
   void abort() native;
@@ -1409,9 +1437,22 @@ class Transaction extends EventTarget native "IDBTransaction" {
 @DocsEditable()
 @DomName('IDBVersionChangeEvent')
 @Unstable()
-class VersionChangeEvent extends Event native "IDBVersionChangeEvent" {
+@Native("IDBVersionChangeEvent")
+class VersionChangeEvent extends Event {
   // To suppress missing implicit constructor warnings.
   factory VersionChangeEvent._() { throw new UnsupportedError("Not supported"); }
+
+  @DomName('IDBVersionChangeEvent.IDBVersionChangeEvent')
+  @DocsEditable()
+  factory VersionChangeEvent(String type, [Map eventInitDict]) {
+    if (eventInitDict != null) {
+      var eventInitDict_1 = convertDartToNative_Dictionary(eventInitDict);
+      return VersionChangeEvent._create_1(type, eventInitDict_1);
+    }
+    return VersionChangeEvent._create_2(type);
+  }
+  static VersionChangeEvent _create_1(type, eventInitDict) => JS('VersionChangeEvent', 'new IDBVersionChangeEvent(#,#)', type, eventInitDict);
+  static VersionChangeEvent _create_2(type) => JS('VersionChangeEvent', 'new IDBVersionChangeEvent(#)', type);
 
   @DomName('IDBVersionChangeEvent.dataLoss')
   @DocsEditable()
@@ -1427,23 +1468,11 @@ class VersionChangeEvent extends Event native "IDBVersionChangeEvent" {
   @DocsEditable()
   @Creates('int|String|Null')
   @Returns('int|String|Null')
-  final dynamic newVersion;
+  final int newVersion;
 
   @DomName('IDBVersionChangeEvent.oldVersion')
   @DocsEditable()
   @Creates('int|String|Null')
   @Returns('int|String|Null')
-  final dynamic oldVersion;
-}
-// Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
-// for details. All rights reserved. Use of this source code is governed by a
-// BSD-style license that can be found in the LICENSE file.
-
-
-@DocsEditable()
-@DomName('IDBAny')
-@deprecated // nonstandard
-abstract class _IDBAny extends Interceptor native "IDBAny" {
-  // To suppress missing implicit constructor warnings.
-  factory _IDBAny._() { throw new UnsupportedError("Not supported"); }
+  final int oldVersion;
 }

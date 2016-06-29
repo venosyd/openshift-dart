@@ -80,11 +80,12 @@
  *       process.exitCode.then(print);
  *     });
  *
- * Using `start()` returns a Future, which completes with a [Process] object when
- * the process has started. This [Process] object allows you to interact with the
- * process while it is running. Using `run()` returns a Future, which completes with
- * a [ProcessResult] object when the spawned process has terminated. This
- * [ProcessResult] object collects the output and exit code from the process. 
+ * Using `start()` returns a Future, which completes with a [Process] object
+ * when the process has started. This [Process] object allows you to interact
+ * with the process while it is running. Using `run()` returns a Future, which
+ * completes with a [ProcessResult] object when the spawned process has
+ * terminated. This [ProcessResult] object collects the output and exit code
+ * from the process.
  *
  * When using `start()`,
  * you need to read all data coming on the stdout and stderr streams otherwise
@@ -92,8 +93,8 @@
  *
  * ## WebSocket
  *
- * The [WebSocket] class provides support for the web socket protocol. This allows
- * full-duplex communications between client and server applications.
+ * The [WebSocket] class provides support for the web socket protocol. This
+ * allows full-duplex communications between client and server applications.
  * Use the WebSocket class in the `dart:html` library for web clients.
  *
  * A web socket server uses a normal HTTP server for accepting web socket
@@ -127,7 +128,7 @@
  *     });
  *
  * Check out the
- * [dartiverse_search](https://code.google.com/p/dart/source/browse/branches/bleeding_edge/dart/samples/dartiverse_search)
+ * [dartiverse_search](https://github.com/dart-lang/sample-dartiverse-search)
  * sample for a client/server pair that uses
  * WebSockets to communicate.
  *
@@ -147,7 +148,7 @@
  *
  * A client connects a Socket using the `connect()` method,
  * which returns a Future.
- * Using `write()`, `writeln()`, or `writeAll()` are the easiest ways to 
+ * Using `write()`, `writeln()`, or `writeAll()` are the easiest ways to
  * send data over the socket.
  * For example:
  *
@@ -185,13 +186,11 @@
  *
  * ## Other resources
  *
- * For an introduction to I/O in Dart, see the
- * [dart:io section of the library tour]
- * (https://www.dartlang.org/docs/dart-up-and-running/contents/ch03.html#ch03-dartio---file-and-socket-io-for-command-line-apps).
+ * For an introduction to I/O in Dart, see the [dart:io section of the library
+ * tour](https://www.dartlang.org/docs/dart-up-and-running/ch03.html#dartio---io-for-command-line-apps).
  *
- * To learn more about I/O in Dart, refer to the
- * [tutorial about writing command-line apps]
- * (https://www.dartlang.org/docs/tutorials/io/).
+ * To learn more about I/O in Dart, refer to the [tutorial about writing
+ * command-line apps](https://www.dartlang.org/docs/tutorials/cmdline/).
  */
 library dart.io;
 
@@ -199,9 +198,13 @@ import 'dart:async';
 import 'dart:_internal';
 import 'dart:collection' show HashMap,
                               HashSet,
+                              Queue,
+                              ListQueue,
                               LinkedList,
-                              LinkedListEntry;
+                              LinkedListEntry,
+                              UnmodifiableMapView;
 import 'dart:convert';
+import 'dart:developer';
 import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
@@ -222,17 +225,19 @@ part 'http_headers.dart';
 part 'http_impl.dart';
 part 'http_parser.dart';
 part 'http_session.dart';
+part 'io_resource_info.dart';
 part 'io_sink.dart';
 part 'io_service.dart';
 part 'link.dart';
 part 'platform.dart';
 part 'platform_impl.dart';
 part 'process.dart';
+part 'secure_server_socket.dart';
+part 'secure_socket.dart';
+part 'security_context.dart';
+part 'service_object.dart';
 part 'socket.dart';
 part 'stdio.dart';
 part 'string_transformer.dart';
-part 'timer_impl.dart';
-part 'secure_socket.dart';
-part 'secure_server_socket.dart';
 part 'websocket.dart';
 part 'websocket_impl.dart';

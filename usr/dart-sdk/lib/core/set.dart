@@ -14,12 +14,16 @@ part of dart.core;
  * elements are treated as being the same for any operation on the set.
  *
  * The default [Set] implementation, [LinkedHashSet], considers objects
- * indistinguishable if they are equal with regard to 
+ * indistinguishable if they are equal with regard to
  * operator [Object.==].
  *
- * Sets may be either ordered or unordered. [HashSet] is unordered and
- * doesn't guarantee anything about the order that elements are accessed in by
- * iteration. [LinkedHashSet] iterates in the insertion order of its elements.
+ * Iterating over elements of a set may be either unordered
+ * or ordered in some way. Examples:
+ *
+ * * A [HashSet] is unordered, which means that its iteration order is
+ *   uspecified,
+ * * [LinkedHashSet] iterates in the insertion order of its elements, and
+ * * a sorted set like [SplayTreeSet] iterates the elements in sorted order.
  *
  * It is generally not allowed to modify the set (add or remove elements) while
  * an operation on the set is being performed, for example during a call to
@@ -27,13 +31,16 @@ part of dart.core;
  * iterating either the set itself or any [Iterable] that is backed by the set,
  * such as the ones returned by methods like [where] and [map].
  */
-abstract class Set<E> extends IterableBase<E> implements EfficientLength {
+abstract class Set<E> extends Iterable<E> implements EfficientLength {
   /**
    * Creates an empty [Set].
    *
-   * The created [Set] is a [LinkedHashSet]. As such, it considers elements that
-   * are equal (using [==]) to be indistinguishable, and requires them to
-   * have a compatible [Object.hashCode] implementation.
+   * The created [Set] is a plain [LinkedHashSet].
+   * As such, it considers elements that are equal (using [==]) to be
+   * indistinguishable, and requires them to have a compatible
+   * [Object.hashCode] implementation.
+   *
+   * The set is equivalent to one created by `new LinkedHashSet<E>()`.
    */
   factory Set() = LinkedHashSet<E>;
 
@@ -42,17 +49,38 @@ abstract class Set<E> extends IterableBase<E> implements EfficientLength {
    *
    * The created [Set] is a [LinkedHashSet] that uses identity as equality
    * relation.
+   *
+   * The set is equivalent to one created by `new LinkedHashSet<E>.identity()`.
    */
   factory Set.identity() = LinkedHashSet<E>.identity;
 
   /**
-   * Creates a [Set] that contains all elements of [other].
+   * Creates a [Set] that contains all [elements].
+   *
+   * All the [elements] should be assignable to [E].
+   * The `elements` iterable itself can have any type,
+   * so this constructor can be used to down-cast a `Set`, for example as:
+   *
+   *     Set<SuperType> superSet = ...;
+   *     Set<SubType> subSet =
+   *         new Set<SubType>.from(superSet.where((e) => e is SubType));
    *
    * The created [Set] is a [LinkedHashSet]. As such, it considers elements that
-   * are equal (using [==]) to be undistinguishable, and requires them to
+   * are equal (using [==]) to be indistinguishable, and requires them to
    * have a compatible [Object.hashCode] implementation.
+   *
+   * The set is equivalent to one created by
+   * `new LinkedHashSet<E>.from(elements)`.
    */
-  factory Set.from(Iterable<E> other) = LinkedHashSet<E>.from;
+  factory Set.from(Iterable elements) = LinkedHashSet<E>.from;
+
+  /**
+   * Provides an iterator that iterates over the elements of this set.
+   *
+   * The order of iteration is defined by the individual `Set` implementation,
+   * but must be consistent between changes to the set.
+   */
+  Iterator<E> get iterator;
 
   /**
    * Returns true if [value] is in the set.
@@ -60,14 +88,30 @@ abstract class Set<E> extends IterableBase<E> implements EfficientLength {
   bool contains(Object value);
 
   /**
-   * Adds [value] into the set. Returns `true` if [value] was added to the set.
+   * Adds [value] to the set.
    *
-   * If [value] already exists, the set is not changed and `false` is returned.
+   * Returns `true` if [value] (or an equal value) was not yet in the set.
+   * Otherwise returns `false` and the set is not changed.
+   *
+   * Example:
+   *
+   *     var set = new Set();
+   *     var time1 = new DateTime.fromMillisecondsSinceEpoch(0);
+   *     var time2 = new DateTime.fromMillisecondsSinceEpoch(0);
+   *     // time1 and time2 are equal, but not identical.
+   *     Expect.isTrue(time1 == time2);
+   *     Expect.isFalse(identical(time1, time2));
+   *     set.add(time1);  // => true.
+   *     // A value equal to time2 exists already in the set, and the call to
+   *     // add doesn't change the set.
+   *     set.add(time2);  // => false.
+   *     Expect.isTrue(set.length == 1);
+   *     Expect.isTrue(identical(time1, set.first));
    */
   bool add(E value);
 
   /**
-   * Adds all of [elements] to this Set.
+   * Adds all [elements] to this Set.
    *
    * Equivalent to adding each element in [elements] using [add],
    * but some collections may be able to optimize it.
@@ -136,7 +180,7 @@ abstract class Set<E> extends IterableBase<E> implements EfficientLength {
   Set<E> union(Set<E> other);
 
   /**
-   * Returns a new set with the the elements of this that are not in [other].
+   * Returns a new set with the elements of this that are not in [other].
    *
    * That is, the returned set contains all the elements of this [Set] that
    * are not elements of [other] according to `other.contains`.
@@ -147,4 +191,14 @@ abstract class Set<E> extends IterableBase<E> implements EfficientLength {
    * Removes all elements in the set.
    */
   void clear();
+
+  /* Creates a [Set] with the same elements and behavior as this `Set`.
+   *
+   * The returned set behaves the same as this set
+   * with regard to adding and removing elements.
+   * It initially contains the same elements.
+   * If this set specifies an ordering of the elements,
+   * the returned set will have the same order.
+   */
+  Set<E> toSet();
 }

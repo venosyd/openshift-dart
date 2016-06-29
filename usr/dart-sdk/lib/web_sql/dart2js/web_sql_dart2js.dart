@@ -12,10 +12,9 @@ library dart.dom.web_sql;
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:_internal' hide deprecated;
+import 'dart:_internal';
 import 'dart:html';
 import 'dart:html_common';
-import 'dart:_js_helper' show convertDartClosureToJS, Creates, JSName;
 import 'dart:_foreign_helper' show JS;
 import 'dart:_interceptors' show Interceptor;
 // DO NOT EDIT - unless you are editing documentation as per:
@@ -23,6 +22,8 @@ import 'dart:_interceptors' show Interceptor;
 // Auto-generated dart:audio library.
 
 
+import 'dart:_js_helper' show convertDartClosureToJS, Creates, JSName, Native,
+    JavaScriptIndexingBehavior;
 
 
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
@@ -81,7 +82,8 @@ typedef void SqlTransactionErrorCallback(SqlError error);
 @Experimental()
 // http://www.w3.org/TR/webdatabase/#asynchronous-database-api
 @Experimental() // deprecated
-class SqlDatabase extends Interceptor native "Database" {
+@Native("Database")
+class SqlDatabase extends Interceptor {
   // To suppress missing implicit constructor warnings.
   factory SqlDatabase._() { throw new UnsupportedError("Not supported"); }
 
@@ -101,6 +103,8 @@ class SqlDatabase extends Interceptor native "Database" {
    * Otherwise, [errorCallback] is called.
    *
    * [oldVersion] should match the database's current [version] exactly.
+   *
+   * See also:
    *
    * * [Database.changeVersion](http://www.w3.org/TR/webdatabase/#dom-database-changeversion) from W3C.
    */
@@ -125,7 +129,8 @@ class SqlDatabase extends Interceptor native "Database" {
 @DomName('SQLError')
 // http://www.w3.org/TR/webdatabase/#sqlerror
 @Experimental() // deprecated
-class SqlError extends Interceptor native "SQLError" {
+@Native("SQLError")
+class SqlError extends Interceptor {
   // To suppress missing implicit constructor warnings.
   factory SqlError._() { throw new UnsupportedError("Not supported"); }
 
@@ -178,7 +183,8 @@ class SqlError extends Interceptor native "SQLError" {
 @DomName('SQLResultSet')
 // http://www.w3.org/TR/webdatabase/#sqlresultset
 @Experimental() // deprecated
-class SqlResultSet extends Interceptor native "SQLResultSet" {
+@Native("SQLResultSet")
+class SqlResultSet extends Interceptor {
   // To suppress missing implicit constructor warnings.
   factory SqlResultSet._() { throw new UnsupportedError("Not supported"); }
 
@@ -203,7 +209,8 @@ class SqlResultSet extends Interceptor native "SQLResultSet" {
 @DomName('SQLResultSetRowList')
 // http://www.w3.org/TR/webdatabase/#sqlresultsetrowlist
 @Experimental() // deprecated
-class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableListMixin<Map> implements List<Map> native "SQLResultSetRowList" {
+@Native("SQLResultSetRowList")
+class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableListMixin<Map> implements List<Map> {
   // To suppress missing implicit constructor warnings.
   factory SqlResultSetRowList._() { throw new UnsupportedError("Not supported"); }
 
@@ -214,7 +221,7 @@ class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableList
   Map operator[](int index) {
     if (JS("bool", "# >>> 0 !== # || # >= #", index,
         index, index, length))
-      throw new RangeError.range(index, 0, length);
+      throw new RangeError.index(index, this);
     return this.item(index);
   }
   void operator[]=(int index, Map value) {
@@ -224,7 +231,7 @@ class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableList
   // Map is the element type.
 
 
-  void set length(int value) {
+  set length(int value) {
     throw new UnsupportedError("Cannot resize immutable List.");
   }
 
@@ -257,14 +264,12 @@ class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableList
 
   @DomName('SQLResultSetRowList.item')
   @DocsEditable()
-  @Creates('=Object')
   Map item(int index) {
     return convertNativeToDart_Dictionary(_item_1(index));
   }
   @JSName('item')
   @DomName('SQLResultSetRowList.item')
   @DocsEditable()
-  @Creates('=Object')
   _item_1(index) native;
 }
 // Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
@@ -279,27 +284,12 @@ class SqlResultSetRowList extends Interceptor with ListMixin<Map>, ImmutableList
 @Experimental()
 // http://www.w3.org/TR/webdatabase/#sqltransaction
 @deprecated // deprecated
-class SqlTransaction extends Interceptor native "SQLTransaction" {
+@Native("SQLTransaction")
+class SqlTransaction extends Interceptor {
   // To suppress missing implicit constructor warnings.
   factory SqlTransaction._() { throw new UnsupportedError("Not supported"); }
 
   @DomName('SQLTransaction.executeSql')
   @DocsEditable()
-  void executeSql(String sqlStatement, List arguments, [SqlStatementCallback callback, SqlStatementErrorCallback errorCallback]) native;
-}
-// Copyright (c) 2012, the Dart project authors.  Please see the AUTHORS file
-// for details. All rights reserved. Use of this source code is governed by a
-// BSD-style license that can be found in the LICENSE file.
-
-
-@DocsEditable()
-@DomName('SQLTransactionSync')
-@SupportedBrowser(SupportedBrowser.CHROME)
-@SupportedBrowser(SupportedBrowser.SAFARI)
-@Experimental()
-// http://www.w3.org/TR/webdatabase/#sqltransactionsync
-@Experimental() // deprecated
-abstract class _SQLTransactionSync extends Interceptor native "SQLTransactionSync" {
-  // To suppress missing implicit constructor warnings.
-  factory _SQLTransactionSync._() { throw new UnsupportedError("Not supported"); }
+  void executeSql(String sqlStatement, [List arguments, SqlStatementCallback callback, SqlStatementErrorCallback errorCallback]) native;
 }

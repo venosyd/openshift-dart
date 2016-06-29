@@ -20,14 +20,21 @@ typedef int _Hasher<K>(K object);
  * The keys of a `HashMap` must have consistent [Object.operator==]
  * and [Object.hashCode] implementations. This means that the `==` operator
  * must define a stable equivalence relation on the keys (reflexive,
- * anti-symmetric, transitive, and consistent over time), and that `hashCode`
+ * symmetric, transitive, and consistent over time), and that `hashCode`
  * must be the same for objects that are considered equal by `==`.
  *
  * The map allows `null` as a key.
+ *
+ * Iterating the map's keys, values or entries (through [forEach])
+ * may happen in any order.
+ * The iteration order only changes when the map is modified.
+ * Values are iterated in the same order as their associated keys,
+ * so iterating the [keys] and [values] in parallel
+ * will give matching key and value pairs.
  */
 abstract class HashMap<K, V> implements Map<K, V> {
   /**
-   * Creates a hash-table based [Map].
+   * Creates an unordered hash-table based [Map].
    *
    * The created map is not ordered in any way. When iterating the keys or
    * values, the iteration order is unspecified except that it will stay the
@@ -49,14 +56,32 @@ abstract class HashMap<K, V> implements Map<K, V> {
    * The [isValidKey] function defaults to just testing if the object is a
    * [K] instance.
    *
+   * Example:
+   *
+   *     new HashMap<int,int>(equals: (int a, int b) => (b - a) % 5 == 0,
+   *                          hashCode: (int e) => e % 5)
+   *
+   * This example map does not need an `isValidKey` function to be passed.
+   * The default function accepts only `int` values, which can safely be
+   * passed to both the `equals` and `hashCode` functions.
+   *
+   * If neither `equals`, `hashCode`, nor `isValidKey` is provided,
+   * the default `isValidKey` instead accepts all keys.
+   * The default equality and hashcode operations are assumed to work on all
+   * objects.
+   *
+   * Likewise, if `equals` is [identical], `hashCode` is [identityHashCode]
+   * and `isValidKey` is omitted, the resulting map is identity based,
+   * and the `isValidKey` defaults to accepting all keys.
+   * Such a map can be created directly using [HashMap.identity].
+   *
    * The used `equals` and `hashCode` method should always be consistent,
    * so that if `equals(a, b)` then `hashCode(a) == hashCode(b)`. The hash
    * of an object, or what it compares equal to, should not change while the
-   * object is in the table. If it does change, the result is unpredictable.
+   * object is a key in the map. If it does change, the result is unpredictable.
    *
-   * It is generally the case that if you supply one of [equals] and [hashCode],
-   * you also want to supply the other. The only common exception is to pass
-   * [identical] as the equality and use the default hash code.
+   * If you supply one of [equals] and [hashCode],
+   * you should generally also to supply the other.
    */
   external factory HashMap({bool equals(K key1, K key2),
                             int hashCode(K key),
@@ -67,15 +92,18 @@ abstract class HashMap<K, V> implements Map<K, V> {
    *
    * Effectively a shorthand for:
    *
-   *     new HashMap(equals: identical, hashCode: identityHashCodeOf)
+   *     new HashMap<K, V>(equals: identical,
+   *                       hashCode: identityHashCode)
    */
   external factory HashMap.identity();
 
   /**
-   * Creates a [HashMap] that contains all key value pairs of [other].
+   * Creates a [HashMap] that contains all key/value pairs of [other].
    */
-  factory HashMap.from(Map<K, V> other) {
-    return new HashMap<K, V>()..addAll(other);
+  factory HashMap.from(Map other) {
+    HashMap<K, V> result = new HashMap<K, V>();
+    other.forEach((k, v) { result[k as Object/*=K*/] = v as Object/*=V*/; });
+    return result;
   }
 
   /**

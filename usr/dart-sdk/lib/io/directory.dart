@@ -6,6 +6,110 @@ part of dart.io;
 
 /**
  * A reference to a directory (or _folder_) on the file system.
+ *
+ * A Directory instance is an object holding a [path] on which operations can
+ * be performed. The path to the directory can be [absolute] or [relative].
+ * You can get the parent directory using the getter [parent],
+ * a property inherited from [FileSystemEntity].
+ *
+ * In addition to being used as an instance to access the file system,
+ * Directory has a number of static properties, such as [systemTemp],
+ * which gets the system's temporary directory, and the getter and setter
+ * [current], which you can use to access or change the current directory.
+ *
+ * Create a new Directory object with a pathname to access the specified
+ * directory on the file system from your program.
+ *
+ *     var myDir = new Directory('myDir');
+ *
+ * Most methods in this class occur in synchronous and asynchronous pairs,
+ * for example, [create] and [createSync].
+ * Unless you have a specific reason for using the synchronous version
+ * of a method, prefer the asynchronous version to avoid blocking your program.
+ *
+ * ## Create a directory
+ *
+ * The following code sample creates a directory using the [create] method.
+ * By setting the `recursive` parameter to true, you can create the
+ * named directory and all its necessary parent directories,
+ * if they do not already exist.
+ *
+ *     import 'dart:io';
+ *
+ *     void main() {
+ *       // Creates dir/ and dir/subdir/.
+ *       new Directory('dir/subdir').create(recursive: true)
+ *         // The created directory is returned as a Future.
+ *         .then((Directory directory) {
+ *           print(directory.path);
+ *       });
+ *     }
+ *
+ * ## List a directory
+ *
+ * Use the [list] or [listSync] methods to get the files and directories
+ * contained by a directory.
+ * Set `recursive` to true to recursively list all subdirectories.
+ * Set `followLinks` to true to follow symbolic links.
+ * The list method returns a [Stream] that provides FileSystemEntity
+ * objects. Use the listen callback function to process each object
+ * as it become available.
+ *
+ *     import 'dart:io';
+ *
+ *     void main() {
+ *       // Get the system temp directory.
+ *       var systemTempDir = Directory.systemTemp;
+ *
+ *       // List directory contents, recursing into sub-directories,
+ *       // but not following symbolic links.
+ *       systemTempDir.list(recursive: true, followLinks: false)
+ *         .listen((FileSystemEntity entity) {
+ *           print(entity.path);
+ *         });
+ *     }
+ *
+ * ## The use of Futures
+ *
+ * I/O operations can block a program for some period of time while it waits for
+ * the operation to complete. To avoid this, all
+ * methods involving I/O have an asynchronous variant which returns a [Future].
+ * This future completes when the I/O operation finishes. While the I/O
+ * operation is in progress, the Dart program is not blocked,
+ * and can perform other operations.
+ *
+ * For example,
+ * the [exists] method, which determines whether the directory exists,
+ * returns a boolean value using a Future.
+ * Use `then` to register a callback function, which is called when
+ * the value is ready.
+ *
+ *     import 'dart:io';
+ *
+ *     main() {
+ *       final myDir = new Directory('dir');
+ *       myDir.exists().then((isThere) {
+ *         isThere ? print('exists') : print('non-existent');
+ *       });
+ *     }
+ *
+ *
+ * In addition to exists, the [stat], [rename], and
+ * other methods, return Futures.
+ *
+ * ## Other resources
+ *
+ * * [Dart by Example](https://www.dartlang.org/dart-by-example/#files-directories-and-symlinks)
+ *   provides additional task-oriented code samples that show how to use
+ *   various API from the Directory class and the related [File] class.
+ *
+ * * [I/O for Command-Line
+ *   Apps](https://www.dartlang.org/docs/dart-up-and-running/ch03.html#dartio---io-for-command-line-apps)
+ *   a section from _A Tour of the Dart Libraries_ covers files and directories.
+ *
+ * * [Write Command-Line Apps](https://www.dartlang.org/docs/tutorials/cmdline/),
+ *   a tutorial about writing command-line apps, includes information about
+ *   files and directories.
  */
 abstract class Directory implements FileSystemEntity {
   /**
@@ -14,9 +118,13 @@ abstract class Directory implements FileSystemEntity {
   final String path;
 
   /**
-   * Creates a directory object. The path is either an absolute path,
-   * or it is a relative path which is interpreted relative to the directory
-   * in which the Dart VM was started.
+   * Creates a [Directory] object.
+   *
+   * If [path] is a relative path, it will be interpreted relative to the
+   * current working directory (see [Directory.current]), when used.
+   *
+   * If [path] is an absolute path, it will be immune to changes to the
+   * current working directory.
    */
   factory Directory(String path) => new _Directory(path);
 
@@ -34,6 +142,15 @@ abstract class Directory implements FileSystemEntity {
   static Directory get current => _Directory.current;
 
   /**
+   * Returns a [Uri] representing the directory's location.
+   *
+   * The returned URI's scheme is always "file" if the entity's [path] is
+   * absolute, otherwise the scheme will be empty.
+   * The returned URI's path always ends in a slash ('/').
+   */
+  Uri get uri;
+
+  /**
    * Sets the current working directory of the Dart process including
    * all running isolates. The new value set can be either a [Directory]
    * or a [String].
@@ -43,7 +160,7 @@ abstract class Directory implements FileSystemEntity {
    * resolved by the OS.
    *
    * Note that setting the current working directory is a synchronous
-   * operation and that it changes the the working directory of *all*
+   * operation and that it changes the working directory of *all*
    * isolates.
    *
    * Use this with care - especially when working with asynchronous
