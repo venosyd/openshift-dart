@@ -23,9 +23,6 @@ function build() {
   pushd $OPENSHIFT_REPO_DIR
   ${OPENSHIFT_DART_DIR}/usr/dart-sdk/bin/pub --trace --verbosity io get
   ${OPENSHIFT_DART_DIR}/usr/dart-sdk/bin/pub --trace --verbosity io build
-  if [ -f build.dart ]; then
-    ${OPENSHIFT_DART_DIR}/usr/dart-sdk/bin/dart build.dart --full
-  fi
   popd
 }
 
